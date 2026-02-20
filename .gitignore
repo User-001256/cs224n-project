@@ -1,0 +1,7 @@
+*~
+*.pyc
+*.pt
+*.pkl
+*.txt
+*.csv
+out/
