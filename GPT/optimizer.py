@@ -28,7 +28,7 @@ class AdamW(Optimizer):
         
 
     def step(self, closure: Optional[Callable] = None):
-        loss = None
+        loss = None # Never used?
         if closure is not None:
             loss = closure()
             

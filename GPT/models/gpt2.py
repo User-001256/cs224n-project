@@ -7,7 +7,6 @@ from models.base_gpt import GPTPreTrainedModel
 from modules.gpt2_layer import GPT2Layer
 from utils import get_extended_attention_mask
 
-
 class GPT2Model(GPTPreTrainedModel):
   """
   The GPT model returns the final embeddings for each token in a sentence.
@@ -102,11 +101,10 @@ class GPT2Model(GPTPreTrainedModel):
 
       return hidden_state(s) * E^T
     """
-    # TODO
+    # TODO: Not clear when this method is used
     ### YOUR CODE HERE
     print(self.word_embedding.weight.shape)
     raise NotImplementedError
-
 
   @classmethod
   def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12):
