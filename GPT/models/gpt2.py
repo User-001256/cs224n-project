@@ -102,8 +102,9 @@ class GPT2Model(GPTPreTrainedModel):
 
       return hidden_state(s) * E^T
     """
+    # TODO
     ### YOUR CODE HERE
-    print(hidden_state.shape)
+    print(self.word_embedding.weight.shape)
     raise NotImplementedError
 
 

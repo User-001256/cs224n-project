@@ -8,8 +8,8 @@ from torch import nn
 # b: Batch Size
 # h: Number Heads
 # t: Temporal Dimension / Sequence Length
-# D: Model Dimension (total)
-# d: Model Dimension (per head)
+# D: Model Dimension (total, d_model)
+# d: Model Dimension (per head, d_head)
 
 MASK_VALUE = -10000.0 # Large negative number for masking (Alternatively, use -torch.inf)
 
