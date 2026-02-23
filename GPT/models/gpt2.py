@@ -44,23 +44,21 @@ class GPT2Model(GPTPreTrainedModel):
     self.init_weights()
 
   def embed(self, input_ids):
-    input_shape = input_ids.size()
-    seq_length = input_shape[1]
+    """
+    Input Embedding for the GPT-2 Model
 
-    inputs_embeds = None
+    Args:
+        input_ids: Tensor. Shape: (b, t). Stores token ids.
 
-    ### YOUR CODE HERE
-    raise NotImplementedError
-
-
-    pos_ids = self.position_ids[:, :seq_length]
-    pos_embeds = None
-
-    ### TODO: Use pos_ids to get position embedding from self.pos_embedding into pos_embeds.
-    ###       Then, add two embeddings together; then apply dropout and return.
-    ### YOUR CODE HERE
-    raise NotImplementedError
-
+    """    
+    # Generate word embeddings and positional embeddings 
+    w_emb = self.word_embedding(input_ids) # (b, t, d_model)
+      # Truncate the position ids to the input batch's sequence length.
+    p_emb = self.pos_embedding(self.position_ids[..., :input_ids.size(1)]) # (b, t, d_model)
+    # Simply add the two embeddings together as final input embeddings
+    emb = w_emb + p_emb
+    # Apply dropout during training
+    return self.embed_dropout(emb)
 
   def encode(self, hidden_states, attention_mask):
     """
@@ -72,7 +70,6 @@ class GPT2Model(GPTPreTrainedModel):
     # Distinguishes between non-padding tokens (with a value of 0) and padding tokens
     # (with a value of a large negative number).
     extended_attention_mask: torch.Tensor = get_extended_attention_mask(attention_mask, self.dtype)
-
     # Pass the hidden states through the encoder layers.
     for i, layer_module in enumerate(self.gpt_layers):
       # Feed the encoding from the last bert_layer to the next.
@@ -106,6 +103,7 @@ class GPT2Model(GPTPreTrainedModel):
       return hidden_state(s) * E^T
     """
     ### YOUR CODE HERE
+    print(hidden_state.shape)
     raise NotImplementedError
 
 
@@ -138,14 +136,14 @@ class GPT2Model(GPTPreTrainedModel):
       l.attention_layer_norm.bias.data = gpt_model.state_dict()[f'h.{i}.ln_1.bias']
 
       # Remap post-attention MLP layers.
-      l.interm_dense.weight.data = gpt_model.state_dict()[f'h.{i}.mlp.c_fc.weight'].T
-      l.interm_dense.bias.data = gpt_model.state_dict()[f'h.{i}.mlp.c_fc.bias']
-      l.out_dense.weight.data = gpt_model.state_dict()[f'h.{i}.mlp.c_proj.weight'].T
-      l.out_dense.bias.data = gpt_model.state_dict()[f'h.{i}.mlp.c_proj.bias']
+      l.ffn_in_dense.weight.data = gpt_model.state_dict()[f'h.{i}.mlp.c_fc.weight'].T
+      l.ffn_in_dense.bias.data = gpt_model.state_dict()[f'h.{i}.mlp.c_fc.bias']
+      l.ffn_out_dense.weight.data = gpt_model.state_dict()[f'h.{i}.mlp.c_proj.weight'].T
+      l.ffn_out_dense.bias.data = gpt_model.state_dict()[f'h.{i}.mlp.c_proj.bias']
 
       # Remap second layer norm weights.
-      l.out_layer_norm.weight.data = gpt_model.state_dict()[f'h.{i}.ln_2.weight']
-      l.out_layer_norm.bias.data = gpt_model.state_dict()[f'h.{i}.ln_2.bias']
+      l.ffn_layer_norm.weight.data = gpt_model.state_dict()[f'h.{i}.ln_2.weight']
+      l.ffn_layer_norm.bias.data = gpt_model.state_dict()[f'h.{i}.ln_2.bias']
 
     # Remap the final layer norm values.
     our_model.final_layer_norm.weight.data = gpt_model.state_dict()['ln_f.weight']
