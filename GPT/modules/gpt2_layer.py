@@ -30,16 +30,16 @@ class GPT2Layer(nn.Module):
       # Drop-out (Applied after FFN, before residual add)
     self.ffn_dropout = nn.Dropout(config.hidden_dropout_prob)
     
-  def attn_module(self, x, attn_mask):
+  def attn_forward(self, x, attn_mask):
     """
-    Attention module of the GPT-2 block
+    Attention component of the GPT-2 block
 
     Args:
         x: Input to the attention module. Shape: (b, t, D)
-        attn_mask: Attention mask to be passed into the masked attention.
+        attn_mask: Attention mask. See CausalSelfAttention documentation for details.
 
     Returns:
-        Output of the attention moduel. Same shape as the input
+        Output. Same shape as input.
     """
     # Save the module input for residual add
     module_input = x 
@@ -51,15 +51,15 @@ class GPT2Layer(nn.Module):
     module_output = module_input + self.attention_dropout(attn_out)
     return module_output
   
-  def ffn_module(self, x):
+  def ffn_forward(self, x):
     """
-    Feed-forward module of the GPT-2 block
+    Feed-forward component of the GPT-2 block
 
     Args:
         x: Input to the FFN module. Shape: (b, t, D)
         
     Returns:
-        Output of the FFN module. Same shape as the input.
+        Output. Same shape as the input.
     """
     # Save the moduel input for residual add
     module_input = x
@@ -72,5 +72,7 @@ class GPT2Layer(nn.Module):
     return module_output
 
   def forward(self, x, attention_mask):
-    # Simply apply the attn and ffn modules sequentially.
-    return self.ffn_module(self.attn_module(x, attention_mask))
+    """
+    Forward method of attention block. x -> self attention -> ffn -> out.
+    """
+    return self.ffn_forward(self.attn_forward(x, attention_mask))

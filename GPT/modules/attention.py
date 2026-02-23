@@ -47,6 +47,9 @@ class CausalSelfAttention(nn.Module):
 
     Args:
         x: Input tensor. Assumped to be shape (b, t, D)
+        
+    Returns:
+        Splitted tensor of shape (b, h, t, d)
     """
     # Produce multiple heads by splitting in the model dimension
     x = rearrange(x, 'b t (h d) -> b t h d', h=self.num_attention_heads)
@@ -59,6 +62,9 @@ class CausalSelfAttention(nn.Module):
 
     Args:
         x: Input tensor. Assumed to be shape (b, h, t, d)
+    
+    Returns:
+        Concatenated tensor with shape (b, t, D)
     """
     # Reverse the operations of split heads:
     x = rearrange(x, 'b h t d -> b t h d') # Transpose
@@ -83,7 +89,7 @@ class CausalSelfAttention(nn.Module):
         # Shape: (b, h, t, d)
     # Apply scaled dot-product. Result shape: (b, h, t, t)
     attn_weights = torch.matmul(Q, rearrange(K, "b h t d -> b h d t")) / (self.attention_head_size ** 0.5)
-    # Apply causal mask (My homework 3 code)
+    # Apply causal mask (Homework 3 code)
     mask = self.causal_mask[..., :x.shape[1], :x.shape[1]].to(attn_weights.device, dtype = attn_weights.dtype)
     attn_weights = torch.masked_fill(attn_weights, mask == 0, MASK_VALUE)
     

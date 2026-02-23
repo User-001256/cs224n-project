@@ -33,7 +33,7 @@ class GPT2Model(GPTPreTrainedModel):
     # GPT-2 layers.
     self.gpt_layers = nn.ModuleList([GPT2Layer(config) for _ in range(config.num_hidden_layers)])
 
-    # [CLS] token transformations.
+    # [CLS] token transformations. # ! Not used? (Dangling code from BERT codebase?)
     self.pooler_dense = nn.Linear(config.hidden_size, config.hidden_size)
     self.pooler_af = nn.Tanh()
 
