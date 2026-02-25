@@ -74,8 +74,8 @@ class ParaphraseGPT(nn.Module):
     ### YOUR CODE HERE
     outputs = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
     last_token = outputs['last_token']
-    vocab_logits = self.gpt.hidden_state_to_token(last_token)
-    return vocab_logits
+    logits = self.gpt.hidden_state_to_token(last_token)
+    return logits
 
 def save_model(model, optimizer, args, filepath):
   save_info = {
