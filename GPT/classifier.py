@@ -18,8 +18,7 @@ from models.gpt2 import GPT2Model
 from optimizer import AdamW
 from tqdm import tqdm
 
-TQDM_DISABLE = False
-
+from torch_utils import *
 
 # Fix the random seed.
 def seed_everything(seed=11711):
@@ -40,7 +39,7 @@ class GPT2SentimentClassifier(torch.nn.Module):
   Thus, your forward() should return one logit for each of the 5 classes.
   '''
 
-  def __init__(self, config):
+  def __init__(self, config, prediction_head = None):
     super(GPT2SentimentClassifier, self).__init__()
     self.num_labels = config.num_labels
     self.gpt = GPT2Model.from_pretrained()
@@ -56,9 +55,12 @@ class GPT2SentimentClassifier(torch.nn.Module):
     ### TODO: Create any instance variables you need to classify the sentiment of BERT embeddings.
     hidden_dim = self.gpt.config.hidden_size
     self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-    self.classifier = torch.nn.Linear(hidden_dim, self.num_labels)
-
-
+    
+    if prediction_head is None:
+      # Use a simple linear prediction head
+      self.classifier = torch.nn.Linear(hidden_dim, self.num_labels)
+    else:
+      self.classifier = prediction_head
 
   def forward(self, input_ids, attention_mask):
     '''Takes a batch of sentences and returns logits for sentiment classes'''
@@ -68,10 +70,8 @@ class GPT2SentimentClassifier(torch.nn.Module):
     ###       the training loop currently uses F.cross_entropy as the loss function.
     ### YOUR CODE HERE
     output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
-    x = output["last_token"]
-    x = self.dropout(x)
-    logits = self.classifier(x) # shape (B,5)
-    return logits
+    # Keys: "last_hidden_state" and "last_token"
+    return self.classifier(self.dropout(output["last_token"]))
 
 
 class SentimentDataset(Dataset):
@@ -175,44 +175,13 @@ def load_data(filename, flag='train'):
   else:
     return data
 
-
-# Evaluate the model on dev examples.
-def model_eval(dataloader, model, device):
-  model.eval()  # Switch to eval model, will turn off randomness like dropout.
-  y_true = []
-  y_pred = []
-  sents = []
-  sent_ids = []
-  for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
-    b_ids, b_mask, b_labels, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'], \
-                                                   batch['labels'], batch['sents'], batch['sent_ids']
-
-    b_ids = b_ids.to(device)
-    b_mask = b_mask.to(device)
-
-    logits = model(b_ids, b_mask)
-    logits = logits.detach().cpu().numpy()
-    preds = np.argmax(logits, axis=1).flatten()
-
-    b_labels = b_labels.flatten()
-    y_true.extend(b_labels)
-    y_pred.extend(preds)
-    sents.extend(b_sents)
-    sent_ids.extend(b_sent_ids)
-
-  f1 = f1_score(y_true, y_pred, average='macro')
-  acc = accuracy_score(y_true, y_pred)
-
-  return acc, f1, y_pred, y_true, sents, sent_ids
-
-
 # Evaluate the model on test examples.
 def model_test_eval(dataloader, model, device):
   model.eval()  # Switch to eval model, will turn off randomness like dropout.
   y_pred = []
   sents = []
   sent_ids = []
-  for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
+  for step, batch in enumerate(tqdm(dataloader, desc=f'eval')):
     b_ids, b_mask, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'], \
                                          batch['sents'], batch['sent_ids']
 
@@ -244,9 +213,96 @@ def save_model(model, optimizer, args, config, filepath):
   torch.save(save_info, filepath)
   print(f"save the model to {filepath}")
 
+def train_one_epoch(model:GPT2SentimentClassifier,
+                    train_dataloader,
+                    valid_dataloader,
+                    optimizer:torch.optim.Optimizer,
+                    device = torch.device("cpu"),
+                    eval_train = False,
+                    eval_valid = True,
+                    tqdm_title = "Training Batches"):
+  """
+  Wrapper function for one-epoch training loop. Used for the GPT2 Sentiment Classifier.
 
+  Args:
+      model: GPT2 Model with Prediction Head
+      train_dataloader: Train Dataloader
+      valid_dataloader: Valid / Dev Dataloader
+      optimizer: Model Optimizer
+      device: Torch Device. Defaults to "cpu".
+      eval_train: Evaluate on Training Set? Defaults to False.
+      eval_valid: Evaluate on Dev Set? Defaults to True.
+  """
+  model.train()
+  train_loss = 0
+  num_batch = 0
+  for batch in tqdm(train_dataloader, desc=tqdm_title, leave = False):
+      b_ids, b_mask, b_labels = (batch['token_ids'],
+                                 batch['attention_mask'], batch['labels'])
+
+      b_ids = b_ids.to(device)
+      b_mask = b_mask.to(device)
+      b_labels = b_labels.to(device)
+      
+      # Typical Training Loop...
+      optimizer.zero_grad()
+      logits = model(b_ids, b_mask)
+      loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+
+      loss.backward()
+      optimizer.step()
+
+      train_loss += loss.item()
+      num_batch += 1
+  # Finalize training loss
+  train_loss = train_loss / num_batch
+  # Optionally Evaluate model
+  out = {"train_loss": train_loss}
+  if eval_train:
+      model.eval()
+      train_acc, train_f1, *_ = model_eval(train_dataloader, model, device, "Eval Train")
+      out["train_acc"] = train_acc
+      out["train_f1"] = train_f1
+  if eval_valid:
+      model.eval()
+      dev_acc, dev_f1, *_ = model_eval(valid_dataloader, model, device, "Eval Dev")
+      out["valid_acc"] = dev_acc
+      out["valid_f1"] = dev_f1
+  return out
+
+# Evaluate the model on dev examples. Don't track gradients.
+@torch.no_grad
+def model_eval(dataloader, model, device, tqdm_title = "Eval Batches"):
+  model.eval()  # Switch to eval model, will turn off randomness like dropout.
+  y_true = []
+  y_pred = []
+  sents = []
+  sent_ids = []
+  for step, batch in enumerate(tqdm(dataloader, desc=tqdm_title, leave = False)):
+    b_ids, b_mask, b_labels, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'], \
+                                                   batch['labels'], batch['sents'], batch['sent_ids']
+
+    b_ids = b_ids.to(device)
+    b_mask = b_mask.to(device)
+
+    logits = model(b_ids, b_mask)
+    logits = logits.detach().cpu().numpy()
+    preds = np.argmax(logits, axis=1).flatten()
+
+    b_labels = b_labels.flatten()
+    y_true.extend(b_labels)
+    y_pred.extend(preds)
+    sents.extend(b_sents)
+    sent_ids.extend(b_sent_ids)
+
+  f1 = f1_score(y_true, y_pred, average='macro')
+  acc = accuracy_score(y_true, y_pred)
+
+  return acc, f1, y_pred, y_true, sents, sent_ids
+  
 def train(args):
-  device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+  device = select_device()
+  
   # Create the data and its corresponding datasets and dataloader.
   train_data, num_labels = load_data(args.train, 'train')
   dev_data = load_data(args.dev, 'valid')
@@ -267,8 +323,10 @@ def train(args):
             'fine_tune_mode': args.fine_tune_mode}
 
   config = SimpleNamespace(**config)
-
-  model = GPT2SentimentClassifier(config)
+  
+  # TODO: Define your prediction head here!!!
+  
+  model = GPT2SentimentClassifier(config, prediction_head = None)
   model = model.to(device)
 
   lr = args.lr
@@ -277,37 +335,16 @@ def train(args):
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
-    model.train()
-    train_loss = 0
-    num_batches = 0
-    for batch in tqdm(train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
-      b_ids, b_mask, b_labels = (batch['token_ids'],
-                                 batch['attention_mask'], batch['labels'])
+      metrics = train_one_epoch(model, train_dataloader, dev_dataloader,
+                                optimizer, device, True, True, f"Epoch-{epoch}")
 
-      b_ids = b_ids.to(device)
-      b_mask = b_mask.to(device)
-      b_labels = b_labels.to(device)
+      train_loss, train_acc, dev_acc = metrics["train_loss"], metrics["train_acc"], metrics["valid_acc"]
 
-      optimizer.zero_grad()
-      logits = model(b_ids, b_mask)
-      loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+      if dev_acc > best_dev_acc:
+        best_dev_acc = dev_acc
+        save_model(model, optimizer, args, config, args.filepath)
 
-      loss.backward()
-      optimizer.step()
-
-      train_loss += loss.item()
-      num_batches += 1
-
-    train_loss = train_loss / (num_batches)
-
-    train_acc, train_f1, *_ = model_eval(train_dataloader, model, device)
-    dev_acc, dev_f1, *_ = model_eval(dev_dataloader, model, device)
-
-    if dev_acc > best_dev_acc:
-      best_dev_acc = dev_acc
-      save_model(model, optimizer, args, config, args.filepath)
-
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+      print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
 
 
 def test(args):
@@ -365,7 +402,6 @@ def get_args():
   args = parser.parse_args()
   return args
 
-
 if __name__ == "__main__":
   args = get_args()
   seed_everything(args.seed)
@@ -378,12 +414,12 @@ if __name__ == "__main__":
     epochs=args.epochs,
     batch_size=args.batch_size,
     hidden_dropout_prob=args.hidden_dropout_prob,
-    train='data/ids-sst-train.csv',
-    dev='data/ids-sst-dev.csv',
-    test='data/ids-sst-test-student.csv',
+    train='../data/ids-sst-train.csv',
+    dev='../data/ids-sst-dev.csv',
+    test='../data/ids-sst-test-student.csv',
     fine_tune_mode=args.fine_tune_mode,
-    dev_out='predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
-    test_out='predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
+    dev_out='../predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
+    test_out='../predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
   )
 
   train(config)
@@ -399,12 +435,12 @@ if __name__ == "__main__":
     epochs=args.epochs,
     batch_size=8,
     hidden_dropout_prob=args.hidden_dropout_prob,
-    train='data/ids-cfimdb-train.csv',
-    dev='data/ids-cfimdb-dev.csv',
-    test='data/ids-cfimdb-test-student.csv',
+    train='../data/ids-cfimdb-train.csv',
+    dev='../data/ids-cfimdb-dev.csv',
+    test='../data/ids-cfimdb-test-student.csv',
     fine_tune_mode=args.fine_tune_mode,
-    dev_out='predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
-    test_out='predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
+    dev_out='../predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
+    test_out='../predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
   )
 
   train(config)
