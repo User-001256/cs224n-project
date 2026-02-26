@@ -103,8 +103,7 @@ class GPT2Model(GPTPreTrainedModel):
     """
     # TODO: Not clear when this method is used
     ### YOUR CODE HERE
-    print(self.word_embedding.weight.shape)
-    raise NotImplementedError
+    return hidden_state @ self.word_embedding.weight.T
 
   @classmethod
   def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12):

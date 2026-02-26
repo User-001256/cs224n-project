@@ -15,7 +15,8 @@ from transformers import GPT2Tokenizer
 from sklearn.metrics import f1_score, accuracy_score
 
 from models.gpt2 import GPT2Model
-from optimizer import AdamW
+# from optimizer import AdamW
+from torch.optim import AdamW
 from tqdm import tqdm
 
 from torch_utils import *
@@ -29,7 +30,23 @@ def seed_everything(seed=11711):
   torch.cuda.manual_seed_all(seed)
   torch.backends.cudnn.benchmark = False
   torch.backends.cudnn.deterministic = True
-
+  
+def construct_prediction_head(config, kind = "linear"):
+  """
+  Constrcts a prediction head for the GPT2SentimentClassifier
+  """
+  dim_in = config.hidden_size
+  dim_out = config.num_labels
+  # Linear Prediction Head
+  if kind == "linear":
+    return torch.nn.Linear(dim_in, dim_out)
+  if kind == "mlp":
+    return torch.nn.Sequential(
+      torch.nn.Linear(dim_in, dim_in * 3),
+      torch.nn.GELU(),
+      torch.nn.Linear(dim_in * 3, dim_out)
+    )
+  # ! Add your own prediction heads
 
 class GPT2SentimentClassifier(torch.nn.Module):
   '''
@@ -325,12 +342,14 @@ def train(args):
   config = SimpleNamespace(**config)
   
   # TODO: Define your prediction head here!!!
+  head = construct_prediction_head(config, args.prediction_head)
   
-  model = GPT2SentimentClassifier(config, prediction_head = None)
+  model = GPT2SentimentClassifier(config, prediction_head = head)
   model = model.to(device)
 
+  # Add weight decay to combat overfitting.
   lr = args.lr
-  optimizer = AdamW(model.parameters(), lr=lr)
+  optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.005)
   best_dev_acc = 0
 
   # Run for the specified number of epochs.
@@ -349,7 +368,7 @@ def train(args):
 
 def test(args):
   with torch.no_grad():
-    device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+    device = select_device()
     saved = torch.load(args.filepath)
     config = saved['model_config']
     model = GPT2SentimentClassifier(config)
@@ -392,8 +411,9 @@ def get_args():
   parser.add_argument("--fine-tune-mode", type=str,
                       help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
                       choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
-  parser.add_argument("--use_gpu", action='store_true')
-
+  parser.add_argument("--prediction-head", type=str,
+                      help="Type of prediction head",
+                      choices = ("linear", "mlp"), default = "linar")
   parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
   parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
   parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
@@ -410,7 +430,7 @@ if __name__ == "__main__":
   config = SimpleNamespace(
     filepath='sst-classifier.pt',
     lr=args.lr,
-    use_gpu=args.use_gpu,
+    prediction_head=args.prediction_head,
     epochs=args.epochs,
     batch_size=args.batch_size,
     hidden_dropout_prob=args.hidden_dropout_prob,
@@ -431,7 +451,7 @@ if __name__ == "__main__":
   config = SimpleNamespace(
     filepath='cfimdb-classifier.pt',
     lr=args.lr,
-    use_gpu=args.use_gpu,
+    prediction_head=args.prediction_head,
     epochs=args.epochs,
     batch_size=8,
     hidden_dropout_prob=args.hidden_dropout_prob,
