@@ -337,7 +337,8 @@ def train(args):
             'num_labels': num_labels,
             'hidden_size': 768,
             'data_dir': '.',
-            'fine_tune_mode': args.fine_tune_mode}
+            'fine_tune_mode': args.fine_tune_mode,
+            "prediction_head": args.prediction_head}
 
   config = SimpleNamespace(**config)
   
@@ -347,9 +348,9 @@ def train(args):
   model = GPT2SentimentClassifier(config, prediction_head = head)
   model = model.to(device)
 
-  # Add weight decay to combat overfitting.
+  # ! Only apply weight decay for training full network!
   lr = args.lr
-  optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.005)
+  optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
   best_dev_acc = 0
 
   # Run for the specified number of epochs.
@@ -369,9 +370,11 @@ def train(args):
 def test(args):
   with torch.no_grad():
     device = select_device()
-    saved = torch.load(args.filepath)
+    saved = torch.load(args.filepath, weights_only = False)
     config = saved['model_config']
-    model = GPT2SentimentClassifier(config)
+    # Load prediction head
+    head = construct_prediction_head(config, config.prediction_head)
+    model = GPT2SentimentClassifier(config, head)
     model.load_state_dict(saved['model'])
     model = model.to(device)
     print(f"load model from {args.filepath}")
