@@ -6,3 +6,5 @@
 *.csv
 out/
 data/
+.venv/
+project/
