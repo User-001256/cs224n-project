@@ -33,7 +33,6 @@ def construct_prediction_head(hidden_size, num_labels, kind = "linear"):
       torch.nn.GELU(),
       torch.nn.Linear(dim_in * 3, dim_out)
     )
-  # ! Add your own prediction heads
 
 class GPT2SentimentClassifier(torch.nn.Module):
   '''
@@ -58,7 +57,7 @@ class GPT2SentimentClassifier(torch.nn.Module):
     
     # Initialize GPT2 Backbone:
     if gpt_backbone is None:
-      self.gpt = GPT2Model.from_pretrained("gpt") # Use base model
+      self.gpt = GPT2Model.from_pretrained("gpt2") # Use base model
     else:
       self.gpt = gpt_backbone
     
@@ -358,12 +357,12 @@ def get_args():
   parser.add_argument("--fine-tune-mode", type=str,
                       help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
                       choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
-  parser.add_argument("--gpt-kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "distilgpt2"), default="gpt2")
+  parser.add_argument("--gpt-kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "distilgpt2"), default="gpt2")
   parser.add_argument("--prediction-head", type=str,
                       help="Type of prediction head",
                       choices = ("linear", "mlp"), default = "linar")
   parser.add_argument("--batch_size", help='Batch Size. Recommends 64+ for GPU.', type=int, default=8)
-  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 1-4 for GPU.', type = int, default = 0)
+  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
   parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
   parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
                       default=1e-3)
