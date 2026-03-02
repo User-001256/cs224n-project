@@ -19,39 +19,21 @@ import numpy as np
 import torch.nn.functional as F
 
 from torch import nn
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from datasets import (
-  ParaphraseDetectionDataset,
-  ParaphraseDetectionTestDataset,
-  load_paraphrase_data
-)
+from datasets import get_paraphrase_dataloader
 from evaluation import model_eval_paraphrase, model_test_paraphrase
 from models.gpt2 import GPT2Model
 
-from optimizer import AdamW
-
-TQDM_DISABLE = False
-
-# Fix the random seed.
-def seed_everything(seed=11711):
-  random.seed(seed)
-  np.random.seed(seed)
-  torch.manual_seed(seed)
-  torch.cuda.manual_seed(seed)
-  torch.cuda.manual_seed_all(seed)
-  torch.backends.cudnn.benchmark = False
-  torch.backends.cudnn.deterministic = True
-
+from torch_utils import *
 
 class ParaphraseGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
 
   def __init__(self, args):
     super().__init__()
-    self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
-    self.paraphrase_detection_head = nn.Linear(args.d, 2)  # Paraphrase detection has two outputs: 1 (yes) or 0 (no).
+    self.gpt = GPT2Model.from_pretrained(args.gpt_kind)
+    # self.paraphrase_detection_head = nn.Linear(args.d, 2)  # Paraphrase detection has two outputs: 1 (yes) or 0 (no).
 
     # By default, fine-tune the full model.
     for param in self.gpt.parameters():
@@ -93,25 +75,19 @@ def save_model(model, optimizer, args, filepath):
 
 def train(args):
   """Train GPT-2 for paraphrase detection on the Quora dataset."""
-  device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-  # Create the data and its corresponding datasets and dataloader.
-  para_train_data = load_paraphrase_data(args.para_train)
-  para_dev_data = load_paraphrase_data(args.para_dev)
+  device = select_device()
+  
+  train_dl = get_paraphrase_dataloader(args.para_train, "train", batch_size = args.batch_size, num_workers = args.num_workers)
+  valid_dl = get_paraphrase_dataloader(args.para_dev,   "valid", batch_size = args.batch_size, num_workers = args.num_workers)
 
-  para_train_data = ParaphraseDetectionDataset(para_train_data, args)
-  para_dev_data = ParaphraseDetectionDataset(para_dev_data, args)
-
-  para_train_dataloader = DataLoader(para_train_data, shuffle=True, batch_size=args.batch_size,
-                                     collate_fn=para_train_data.collate_fn)
-  para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-                                   collate_fn=para_dev_data.collate_fn)
-
-  args = add_arguments(args)
   model = ParaphraseGPT(args)
   model = model.to(device)
-
-  lr = args.lr
-  optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.)
+  
+  optim_config = {
+    "lr" : args.lr,
+    "weight_decay": args.weight_decay
+  }
+  optimizer = set_optimizer(model.parameters(), **optim_config)
   best_dev_acc = 0
 
   # Run for the specified number of epochs.
@@ -119,7 +95,7 @@ def train(args):
     model.train()
     train_loss = 0
     num_batches = 0
-    for batch in tqdm(para_train_dataloader, desc=f'train-{epoch}', disable=TQDM_DISABLE):
+    for batch in tqdm(train_dl, desc=f'train-{epoch}', leave = False):
       # Get the input and move it to the gpu (I do not recommend training this model on CPU).
       b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
       b_ids = b_ids.to(device)
@@ -139,7 +115,7 @@ def train(args):
 
     train_loss = train_loss / num_batches
 
-    dev_acc, dev_f1, *_ = model_eval_paraphrase(para_dev_dataloader, model, device)
+    dev_acc, dev_f1, *_ = model_eval_paraphrase(valid_dl, model, device)
 
     if dev_acc > best_dev_acc:
       best_dev_acc = dev_acc
@@ -151,7 +127,7 @@ def train(args):
 @torch.no_grad()
 def test(args):
   """Evaluate your model on the dev and test datasets; save the predictions to disk."""
-  device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+  device = select_device()
   saved = torch.load(args.filepath)
 
   model = ParaphraseGPT(saved['args'])
@@ -160,20 +136,12 @@ def test(args):
   model.eval()
   print(f"Loaded model to test from {args.filepath}")
 
-  para_dev_data = load_paraphrase_data(args.para_dev)
-  para_test_data = load_paraphrase_data(args.para_test, split='test')
+  dev_dl =  get_paraphrase_dataloader(args.para_dev, "valid", batch_size = args.batch_size, num_workers = args.num_workers)
+  test_dl = get_paraphrase_dataloader(args.para_test, "test", batch_size = args.batch_size, num_workers = args.num_workers)
 
-  para_dev_data = ParaphraseDetectionDataset(para_dev_data, args)
-  para_test_data = ParaphraseDetectionTestDataset(para_test_data, args)
-
-  para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
-                                   collate_fn=para_dev_data.collate_fn)
-  para_test_dataloader = DataLoader(para_test_data, shuffle=True, batch_size=args.batch_size,
-                                    collate_fn=para_test_data.collate_fn)
-
-  dev_para_acc, _, dev_para_y_pred, _, dev_para_sent_ids = model_eval_paraphrase(para_dev_dataloader, model, device)
+  dev_para_acc, _, dev_para_y_pred, _, dev_para_sent_ids = model_eval_paraphrase(dev_dl, model, device)
   print(f"dev paraphrase acc :: {dev_para_acc :.3f}")
-  test_para_y_pred, test_para_sent_ids = model_test_paraphrase(para_test_dataloader, model, device)
+  test_para_y_pred, test_para_sent_ids = model_test_paraphrase(test_dl, model, device)
 
   with open(args.para_dev_out, "w+") as f:
     f.write(f"id \t Predicted_Is_Paraphrase \n")
@@ -189,48 +157,51 @@ def test(args):
 def get_args():
   parser = argparse.ArgumentParser()
 
-  parser.add_argument("--para_train", type=str, default="data/quora-train.csv")
-  parser.add_argument("--para_dev", type=str, default="data/quora-dev.csv")
-  parser.add_argument("--para_test", type=str, default="data/quora-test-student.csv")
-  parser.add_argument("--para_dev_out", type=str, default="predictions/para-dev-output.csv")
-  parser.add_argument("--para_test_out", type=str, default="predictions/para-test-output.csv")
+  parser.add_argument("--para_train", type=str, default="../data/quora-train.csv")
+  parser.add_argument("--para_dev", type=str, default="../data/quora-dev.csv")
+  parser.add_argument("--para_test", type=str, default="../data/quora-test-student.csv")
+  parser.add_argument("--para_dev_out", type=str, default="../predictions/para-dev-output.csv")
+  parser.add_argument("--para_test_out", type=str, default="../predictions/para-test-output.csv")
 
   parser.add_argument("--seed", type=int, default=11711)
   parser.add_argument("--epochs", type=int, default=10)
-  parser.add_argument("--use_gpu", action='store_true')
-
-  parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
-  parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
-  parser.add_argument("--model_size", type=str,
-                      help="The model size as specified on hugging face. DO NOT use the xl model.",
+  parser.add_argument("--gpt_kind", type=str,
+                      help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large'], default='gpt2')
+
+  parser.add_argument("--batch_size", help='Batch Size. Recommend 64 for GPU.', type=int, default=8)
+  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
+  parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+  parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
+
 
   args = parser.parse_args()
   return args
 
-# You no longer need this after my modifications to gpt2.py.
-def add_arguments(args):
-  """Add arguments that are deterministic on model size."""
-  if args.model_size == 'gpt2':
-    args.d = 768
-    args.l = 12
-    args.num_heads = 12
-  elif args.model_size == 'gpt2-medium':
-    args.d = 1024
-    args.l = 24
-    args.num_heads = 16
-  elif args.model_size == 'gpt2-large':
-    args.d = 1280
-    args.l = 36
-    args.num_heads = 20
-  else:
-    raise Exception(f'{args.model_size} is not supported.')
-  return args
+# GPT2Model.from_pretrained automatically infers hyperparameters.
+# No need of this.
+# def add_arguments(args):
+#   """Add arguments that are deterministic on model size."""
+#   if args.model_size == 'gpt2':
+#     args.d = 768
+#     args.l = 12
+#     args.num_heads = 12
+#   elif args.model_size == 'gpt2-medium':
+#     args.d = 1024
+#     args.l = 24
+#     args.num_heads = 16
+#   elif args.model_size == 'gpt2-large':
+#     args.d = 1280
+#     args.l = 36
+#     args.num_heads = 20
+#   else:
+#     raise Exception(f'{args.model_size} is not supported.')
+#   return args
 
 
 if __name__ == "__main__":
   args = get_args()
   args.filepath = f'{args.epochs}-{args.lr}-paraphrase.pt'  # Save path.
-  seed_everything(args.seed)  # Fix the seed for reproducibility.
+  set_seed(args.seed)  # Fix the seed for reproducibility.
   train(args)
   test(args)

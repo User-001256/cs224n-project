@@ -2,6 +2,8 @@
 
 '''
 Trains and evaluates GPT2SentimentClassifier on SST and CFIMDB
+
+Codebase heavily modified by User001256 for clarity and additional functionality.
 '''
 
 import argparse
@@ -357,7 +359,7 @@ def get_args():
   parser.add_argument("--fine-tune-mode", type=str,
                       help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
                       choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
-  parser.add_argument("--gpt-kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "distilgpt2"), default="gpt2")
+  parser.add_argument("--gpt_kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "distilgpt2"), default="gpt2")
   parser.add_argument("--prediction-head", type=str,
                       help="Type of prediction head",
                       choices = ("linear", "mlp"), default = "linar")

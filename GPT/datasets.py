@@ -91,7 +91,7 @@ class SentimentTestDataset(Dataset):
 
     return batched_data
 
-def _load_data(filename, is_test = False):
+def _load_sentiment_data(filename, is_test = False):
     """
     Subroutine of get_sentiment_dataloader. Copied from starter code.
     """
@@ -132,17 +132,17 @@ def get_sentiment_dataloader(filename, fold = "train", **dataloader_kwargs):
         Otherwise, returns the dataloader only.
     """
     if fold == "train":
-        data, num_labels = _load_data(filename, False)
+        data, num_labels = _load_sentiment_data(filename, False)
         dataset = SentimentDataset(data)
         dataloader = DataLoader(dataset, shuffle = True, collate_fn=dataset.collate_fn, **dataloader_kwargs)
         return dataloader, num_labels
     elif fold == "valid":
-        data, _ = _load_data(filename, False)
+        data, _ = _load_sentiment_data(filename, False)
         dataset = SentimentDataset(data)
         dataloader = DataLoader(dataset, shuffle = False, collate_fn=dataset.collate_fn, **dataloader_kwargs)
         return dataloader
     elif fold == "test":
-        data = _load_data(filename, True)
+        data = _load_sentiment_data(filename, True)
         dataset = SentimentTestDataset(data)
         dataloader = DataLoader(dataset, shuffle = False, collate_fn=dataset.collate_fn, **dataloader_kwargs)
         return dataloader
@@ -163,9 +163,8 @@ def preprocess_string(s):
 
 
 class ParaphraseDetectionDataset(Dataset):
-  def __init__(self, dataset, args):
+  def __init__(self, dataset):
     self.dataset = dataset
-    self.p = args
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -201,9 +200,8 @@ class ParaphraseDetectionDataset(Dataset):
 
 
 class ParaphraseDetectionTestDataset(Dataset):
-  def __init__(self, dataset, args):
+  def __init__(self, dataset):
     self.dataset = dataset
-    self.p = args
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -235,7 +233,7 @@ class ParaphraseDetectionTestDataset(Dataset):
     return batched_data
 
 
-def load_paraphrase_data(paraphrase_filename, split='train'):
+def _load_paraphrase_data(paraphrase_filename, split='train'):
   paraphrase_data = []
   if split == 'test':
     with open(paraphrase_filename, 'r', encoding="utf-8") as fp:
@@ -258,6 +256,29 @@ def load_paraphrase_data(paraphrase_filename, split='train'):
 
   print(f"Loaded {len(paraphrase_data)} {split} examples from {paraphrase_filename}")
   return paraphrase_data
+
+
+def get_paraphrase_dataloader(filename, fold = "train", **dataloader_kwargs):
+    """
+    Obtain the paraphrase detection dataloader
+
+    Args:
+        filename: Input CSV file name. Format: (ID, Sentence 1, Sentence 2, Label)
+        fold: Fold of the dataset. Accepts ('train', 'valid', 'test'). Defaults to 'train'.
+        dataloader_kwargs: Dataloader arguments, can contain optional items like 'batch_size' and 'num_workers'.
+    
+    Returns:
+        Dataloader Object
+    """
+    if fold not in {"train", "test", "valid"}:
+      raise RuntimeError(f"Dataset split '{fold}' is not recognized. Please use 'train', 'valid' or 'test'.")
+    data = _load_paraphrase_data(filename, split = fold)
+    if fold == "test":
+      dataset = ParaphraseDetectionTestDataset(data)
+    else:
+      dataset = ParaphraseDetectionDataset(data)
+    shuffle = (fold == "train")
+    return DataLoader(dataset, shuffle = shuffle, collate_fn = dataset.collate_fn, **dataloader_kwargs)
 
 #########################
 ### Sonnet Generation ###
