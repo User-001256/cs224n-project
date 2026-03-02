@@ -171,7 +171,7 @@ class GPT2Model(GPTPreTrainedModel):
       hidden_size = hf_config.n_embd,                     # d_model
       num_hidden_layers = hf_config.n_layer,              # transformer blocks
       num_attention_heads = hf_config.n_head,             # Attn heads
-      intermediate_size = 3072 if hf_config.n_inner is None else hf_config.n_inner,
+      intermediate_size = 4 * hf_config.n_embd if hf_config.n_inner is None else hf_config.n_inner,
                                                           # FFN Activation Size
       hidden_dropout_prob = hf_config.resid_pdrop,        # Dropout after Attn and FFN
       attention_probs_dropout_prob= hf_config.attn_pdrop, # Dropout within Attn
