@@ -395,10 +395,10 @@ if __name__ == "__main__":
     test_out='../predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
   )
 
-  # train_main(**train_init(config))
+  train_main(**train_init(config))
 
-  # print('Evaluating on SST...')
-  # test(config)
+  print('Evaluating on SST...')
+  test(config)
 
   print('Training Sentiment Classifier on cfimdb...')
   config = SimpleNamespace(
