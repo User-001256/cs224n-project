@@ -11,9 +11,147 @@ import csv
 import re
 import torch
 
-from torch.utils.data import Dataset
 from transformers import GPT2Tokenizer
+from torch.utils.data import Dataset, DataLoader
 
+################################
+### Sentiment Classificaiton ###
+################################
+
+# Training Dataset, with Labels
+class SentimentDataset(Dataset):
+  def __init__(self, dataset):
+    self.dataset = dataset
+    self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    self.tokenizer.pad_token = self.tokenizer.eos_token
+
+  def __len__(self):
+    return len(self.dataset)
+
+  def __getitem__(self, idx):
+    return self.dataset[idx]
+
+  def pad_data(self, data):
+    sents = [x[0] for x in data]
+    labels = [x[1] for x in data]
+    sent_ids = [x[2] for x in data]
+
+    encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
+    token_ids = torch.LongTensor(encoding['input_ids'])
+    attention_mask = torch.LongTensor(encoding['attention_mask'])
+    labels = torch.LongTensor(labels)
+
+    return token_ids, attention_mask, labels, sents, sent_ids
+
+  def collate_fn(self, all_data):
+    token_ids, attention_mask, labels, sents, sent_ids = self.pad_data(all_data)
+
+    batched_data = {
+      'token_ids': token_ids,
+      'attention_mask': attention_mask,
+      'labels': labels,
+      'sents': sents,
+      'sent_ids': sent_ids
+    }
+
+    return batched_data
+
+# Test Datasets. Without labels
+class SentimentTestDataset(Dataset):
+  def __init__(self, dataset):
+    self.dataset = dataset
+    self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    self.tokenizer.pad_token = self.tokenizer.eos_token
+
+  def __len__(self):
+    return len(self.dataset)
+
+  def __getitem__(self, idx):
+    return self.dataset[idx]
+
+  def pad_data(self, data):
+    sents = [x[0] for x in data]
+    sent_ids = [x[1] for x in data]
+
+    encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
+    token_ids = torch.LongTensor(encoding['input_ids'])
+    attention_mask = torch.LongTensor(encoding['attention_mask'])
+
+    return token_ids, attention_mask, sents, sent_ids
+
+  def collate_fn(self, all_data):
+    token_ids, attention_mask, sents, sent_ids = self.pad_data(all_data)
+
+    batched_data = {
+      'token_ids': token_ids,
+      'attention_mask': attention_mask,
+      'sents': sents,
+      'sent_ids': sent_ids
+    }
+
+    return batched_data
+
+def _load_data(filename, is_test = False):
+    """
+    Subroutine of get_sentiment_dataloader. Copied from starter code.
+    """
+    num_labels = {}
+    data = []
+    if is_test:
+        with open(filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent = record['sentence'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                data.append((sent, sent_id))
+    else:
+        with open(filename, 'r') as fp:
+            for record in csv.DictReader(fp, delimiter='\t'):
+                sent = record['sentence'].lower().strip()
+                sent_id = record['id'].lower().strip()
+                label = int(record['sentiment'].strip())
+                if label not in num_labels:
+                    num_labels[label] = len(num_labels)
+                data.append((sent, label, sent_id))
+
+    if is_test:
+        return data
+    else:
+        return data, len(num_labels)
+    
+def get_sentiment_dataloader(filename, fold = "train", **dataloader_kwargs):
+    """
+    Obtain the sentiment classification dataloader.
+
+    Args:
+        filename: Input CSV file name. Format: (ID, Sentence, Sentiment Label)
+        fold: Fold of the dataset. Accepts ('train', 'valid', 'test'). Defaults to 'train'.
+        dataloader_kwargs: Dataloader arguments, can contain optional items like 'batch_size' and 'num_workers'.
+    
+    Returns:
+        If loading train set, returns the dataloader and the number of labels.
+        Otherwise, returns the dataloader only.
+    """
+    if fold == "train":
+        data, num_labels = _load_data(filename, False)
+        dataset = SentimentDataset(data)
+        dataloader = DataLoader(dataset, shuffle = True, collate_fn=dataset.collate_fn, **dataloader_kwargs)
+        return dataloader, num_labels
+    elif fold == "valid":
+        data, _ = _load_data(filename, False)
+        dataset = SentimentDataset(data)
+        dataloader = DataLoader(dataset, shuffle = False, collate_fn=dataset.collate_fn, **dataloader_kwargs)
+        return dataloader
+    elif fold == "test":
+        data = _load_data(filename, True)
+        dataset = SentimentTestDataset(data)
+        dataloader = DataLoader(dataset, shuffle = False, collate_fn=dataset.collate_fn, **dataloader_kwargs)
+        return dataloader
+    else:
+        raise RuntimeError(f"Dataset split '{fold}' is not recognized. Please use 'train', 'valid' or 'test'.")
+        
+############################
+### Paraphrase Detection ###
+############################
 
 def preprocess_string(s):
   return ' '.join(s.lower()
@@ -121,6 +259,9 @@ def load_paraphrase_data(paraphrase_filename, split='train'):
   print(f"Loaded {len(paraphrase_data)} {split} examples from {paraphrase_filename}")
   return paraphrase_data
 
+#########################
+### Sonnet Generation ###
+#########################
 
 class SonnetsDataset(Dataset):
   def __init__(self, file_path):

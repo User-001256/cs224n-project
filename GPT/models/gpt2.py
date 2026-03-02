@@ -1,6 +1,11 @@
+"""
+This file has been re-written for better pre-trained weights integration.
+"""
+
 import torch
 from torch import nn
-from transformers import GPT2Model as OpenAIGPT2Model
+from transformers import GPT2Model as HFGPT2Model
+from transformers import GPT2Config as HFGPT2Config
 
 from config import GPT2Config
 from models.base_gpt import GPTPreTrainedModel
@@ -32,10 +37,6 @@ class GPT2Model(GPTPreTrainedModel):
 
     # GPT-2 layers.
     self.gpt_layers = nn.ModuleList([GPT2Layer(config) for _ in range(config.num_hidden_layers)])
-
-    # [CLS] token transformations. # ! Not used? (Dangling code from BERT codebase?)
-    self.pooler_dense = nn.Linear(config.hidden_size, config.hidden_size)
-    self.pooler_af = nn.Tanh()
 
     # Final layer norm.
     self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -101,50 +102,84 @@ class GPT2Model(GPTPreTrainedModel):
 
       return hidden_state(s) * E^T
     """
-    # TODO: Not clear when this method is used
-    ### YOUR CODE HERE
     return hidden_state @ self.word_embedding.weight.T
 
-  @classmethod
-  def from_pretrained(cls, model='gpt2', d=768, l=12, num_heads=12):
-    gpt_model = OpenAIGPT2Model.from_pretrained(model).eval()
-    our_model = GPT2Model(GPT2Config(hidden_size=d, num_hidden_layers=l,num_attention_heads=num_heads,
-                                     intermediate_size=d*3)).eval()
-
-    # Load word and positional embeddings.
-    our_model.word_embedding.load_state_dict(gpt_model.wte.state_dict())
-    our_model.pos_embedding.load_state_dict(gpt_model.wpe.state_dict())
-
-    for i in range(l):
-      l = our_model.gpt_layers[i]
+  def transfer_weights(self, target_model:HFGPT2Model):
+    """
+    Transfer weights from HuggingFace's 'transformer' GPT2 model to our GPT2 Implementation
+    """
+    target_model = target_model.eval()
+    # Load embedding layers
+    self.word_embedding.load_state_dict(target_model.wte.state_dict())
+    self.pos_embedding.load_state_dict(target_model.wpe.state_dict())
+    # Load all transformer block weights:
+    target_weights = target_model.state_dict()
+    d = self.config.hidden_size #d_model
+    for i, layer in enumerate(self.gpt_layers):
       # Remap the Q,K,V weights from a conv1d to 3 linear projections
-      l.self_attention.query.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, :d].T
-      l.self_attention.query.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][:d]
-      l.self_attention.key.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, d:d*2].T
-      l.self_attention.key.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][d:d*2]
-      l.self_attention.value.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.weight'][:, d*2:].T
-      l.self_attention.value.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_attn.bias'][d*2:]
+      layer.self_attention.query.weight.data = target_weights[f'h.{i}.attn.c_attn.weight'][:, :d].T
+      layer.self_attention.query.bias.data = target_weights[f'h.{i}.attn.c_attn.bias'][:d]
+      layer.self_attention.key.weight.data = target_weights[f'h.{i}.attn.c_attn.weight'][:, d:d*2].T
+      layer.self_attention.key.bias.data = target_weights[f'h.{i}.attn.c_attn.bias'][d:d*2]
+      layer.self_attention.value.weight.data = target_weights[f'h.{i}.attn.c_attn.weight'][:, d*2:].T
+      layer.self_attention.value.bias.data = target_weights[f'h.{i}.attn.c_attn.bias'][d*2:]
 
-      # Remap final dense layer in MHA.
-      l.attention_dense.weight.data = gpt_model.state_dict()[f'h.{i}.attn.c_proj.weight'].T
-      l.attention_dense.bias.data = gpt_model.state_dict()[f'h.{i}.attn.c_proj.bias']
+      # Remap final dense layer in Multiheaded Attention.
+      layer.attention_dense.weight.data = target_weights[f'h.{i}.attn.c_proj.weight'].T
+      layer.attention_dense.bias.data = target_weights[f'h.{i}.attn.c_proj.bias']
 
       # Remap attention layer norm.
-      l.attention_layer_norm.weight.data = gpt_model.state_dict()[f'h.{i}.ln_1.weight']
-      l.attention_layer_norm.bias.data = gpt_model.state_dict()[f'h.{i}.ln_1.bias']
+      layer.attention_layer_norm.weight.data = target_weights[f'h.{i}.ln_1.weight']
+      layer.attention_layer_norm.bias.data = target_weights[f'h.{i}.ln_1.bias']
 
       # Remap post-attention MLP layers.
-      l.ffn_in_dense.weight.data = gpt_model.state_dict()[f'h.{i}.mlp.c_fc.weight'].T
-      l.ffn_in_dense.bias.data = gpt_model.state_dict()[f'h.{i}.mlp.c_fc.bias']
-      l.ffn_out_dense.weight.data = gpt_model.state_dict()[f'h.{i}.mlp.c_proj.weight'].T
-      l.ffn_out_dense.bias.data = gpt_model.state_dict()[f'h.{i}.mlp.c_proj.bias']
+      layer.ffn_in_dense.weight.data = target_weights[f'h.{i}.mlp.c_fc.weight'].T
+      layer.ffn_in_dense.bias.data = target_weights[f'h.{i}.mlp.c_fc.bias']
+      layer.ffn_out_dense.weight.data = target_weights[f'h.{i}.mlp.c_proj.weight'].T
+      layer.ffn_out_dense.bias.data = target_weights[f'h.{i}.mlp.c_proj.bias']
 
       # Remap second layer norm weights.
-      l.ffn_layer_norm.weight.data = gpt_model.state_dict()[f'h.{i}.ln_2.weight']
-      l.ffn_layer_norm.bias.data = gpt_model.state_dict()[f'h.{i}.ln_2.bias']
+      layer.ffn_layer_norm.weight.data = target_weights[f'h.{i}.ln_2.weight']
+      layer.ffn_layer_norm.bias.data = target_weights[f'h.{i}.ln_2.bias']
+    # Remap the final layer norm weights.
+    self.final_layer_norm.weight.data = target_weights['ln_f.weight']
+    self.final_layer_norm.bias.data = target_weights['ln_f.bias']
 
-    # Remap the final layer norm values.
-    our_model.final_layer_norm.weight.data = gpt_model.state_dict()['ln_f.weight']
-    our_model.final_layer_norm.bias.data = gpt_model.state_dict()['ln_f.bias']
+  @classmethod
+  def from_pretrained(cls, model = "gpt2", **kwargs):
+    """
+    Pretrained weights loading from HuggingFace's 'transformers' library.
 
+    Args:
+        model: Variant of the pre-trained weights: 
+          - 'gpt2' - Base Model, 124M Params
+          - 'gpt2-medium' - Medium Model, 355M Params
+          - 'gpt2-large' - Large Model, 774M Params
+          - 'gpt2-xl' - Extra Large Model, 1.5B Params
+          - 'distilgpt2' - Distilled Base Model, 82M Params
+        kwargs: Kept for compatibility reasons. This implementation automatically infers hyperparameters from HF pretrained weights.
+
+    Returns:
+        Our GPT2 implementation loaded with HF pre-trained weights.
+    """
+    # Loads hugging face GPT2 model and model config
+    hf_model = HFGPT2Model.from_pretrained(model).eval()
+    hf_config = hf_model.config
+    # Log Model Architecture Configurations
+    config = GPT2Config(
+      vocab_size = hf_config.vocab_size,                  # Vocab Size
+      hidden_size = hf_config.n_embd,                     # d_model
+      num_hidden_layers = hf_config.n_layer,              # transformer blocks
+      num_attention_heads = hf_config.n_head,             # Attn heads
+      intermediate_size = 3072 if hf_config.n_inner is None else hf_config.n_inner,
+                                                          # FFN Activation Size
+      hidden_dropout_prob = hf_config.resid_pdrop,        # Dropout after Attn and FFN
+      attention_probs_dropout_prob= hf_config.attn_pdrop, # Dropout within Attn
+      max_position_embeddings = hf_config.n_ctx,          # Max context length
+      initializer_range = hf_config.initializer_range,    # std for weight initialization
+      layer_norm_eps = hf_config.layer_norm_epsilon,      # Layer Norm
+    )
+    our_model = GPT2Model(config).eval()
+    # Transfer weights
+    our_model.transfer_weights(hf_model) # type:ignore
     return our_model

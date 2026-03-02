@@ -4,39 +4,26 @@
 Trains and evaluates GPT2SentimentClassifier on SST and CFIMDB
 '''
 
-import random, numpy as np, argparse
+import argparse
 from types import SimpleNamespace
-import csv
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from transformers import GPT2Tokenizer
 from sklearn.metrics import f1_score, accuracy_score
 
 from models.gpt2 import GPT2Model
-# from optimizer import AdamW
-from torch.optim import AdamW
 from tqdm import tqdm
 
 from torch_utils import *
+from datasets import get_sentiment_dataloader
 
-# Fix the random seed.
-def seed_everything(seed=11711):
-  random.seed(seed)
-  np.random.seed(seed)
-  torch.manual_seed(seed)
-  torch.cuda.manual_seed(seed)
-  torch.cuda.manual_seed_all(seed)
-  torch.backends.cudnn.benchmark = False
-  torch.backends.cudnn.deterministic = True
   
-def construct_prediction_head(config, kind = "linear"):
+def construct_prediction_head(hidden_size, num_labels, kind = "linear"):
   """
   Constrcts a prediction head for the GPT2SentimentClassifier
   """
-  dim_in = config.hidden_size
-  dim_out = config.num_labels
+  dim_in = hidden_size
+  dim_out = num_labels
   # Linear Prediction Head
   if kind == "linear":
     return torch.nn.Linear(dim_in, dim_out)
@@ -56,26 +43,38 @@ class GPT2SentimentClassifier(torch.nn.Module):
   Thus, your forward() should return one logit for each of the 5 classes.
   '''
 
-  def __init__(self, config, prediction_head = None):
+  def __init__(self, config, gpt_backbone = None, prediction_head = None):
+    """
+    GPT2 Sentiment Classifier
+
+    Args:
+        config: Config. Includes attributes: num_labels, fine_tune_mode, and hidden_dropout_prob
+        gpt_backbone: GPT2 Backbone. Defaults to None.
+        prediction_head: Prediction Head Module. Defaults to None.
+    """
     super(GPT2SentimentClassifier, self).__init__()
     self.num_labels = config.num_labels
-    self.gpt = GPT2Model.from_pretrained()
-
-    # Pretrain mode does not require updating GPT paramters.
-    assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
-    for param in self.gpt.parameters():
-      if config.fine_tune_mode == 'last-linear-layer':
-        param.requires_grad = False
-      elif config.fine_tune_mode == 'full-model':
-        param.requires_grad = True
-
-    ### TODO: Create any instance variables you need to classify the sentiment of BERT embeddings.
-    hidden_dim = self.gpt.config.hidden_size
-    self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+    self.ft_mode = config.fine_tune_mode
     
+    # Initialize GPT2 Backbone:
+    if gpt_backbone is None:
+      self.gpt = GPT2Model.from_pretrained("gpt") # Use base model
+    else:
+      self.gpt = gpt_backbone
+    
+    # Set fine tune mode
+    for p in self.gpt.parameters():
+      if self.ft_mode == "full-model":
+        p.requires_grad = True
+      else: # Last Linear Layer
+        p.requires_grad = False
+    
+    # Set up prediction head
+    self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
     if prediction_head is None:
-      # Use a simple linear prediction head
-      self.classifier = torch.nn.Linear(hidden_dim, self.num_labels)
+      self.classifier = torch.nn.Linear(
+        self.gpt.config.hidden_size, self.num_labels
+      )
     else:
       self.classifier = prediction_head
 
@@ -90,107 +89,6 @@ class GPT2SentimentClassifier(torch.nn.Module):
     # Keys: "last_hidden_state" and "last_token"
     return self.classifier(self.dropout(output["last_token"]))
 
-
-class SentimentDataset(Dataset):
-  def __init__(self, dataset, args):
-    self.dataset = dataset
-    self.p = args
-    self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    self.tokenizer.pad_token = self.tokenizer.eos_token
-
-  def __len__(self):
-    return len(self.dataset)
-
-  def __getitem__(self, idx):
-    return self.dataset[idx]
-
-  def pad_data(self, data):
-    sents = [x[0] for x in data]
-    labels = [x[1] for x in data]
-    sent_ids = [x[2] for x in data]
-
-    encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
-    token_ids = torch.LongTensor(encoding['input_ids'])
-    attention_mask = torch.LongTensor(encoding['attention_mask'])
-    labels = torch.LongTensor(labels)
-
-    return token_ids, attention_mask, labels, sents, sent_ids
-
-  def collate_fn(self, all_data):
-    token_ids, attention_mask, labels, sents, sent_ids = self.pad_data(all_data)
-
-    batched_data = {
-      'token_ids': token_ids,
-      'attention_mask': attention_mask,
-      'labels': labels,
-      'sents': sents,
-      'sent_ids': sent_ids
-    }
-
-    return batched_data
-
-
-class SentimentTestDataset(Dataset):
-  def __init__(self, dataset, args):
-    self.dataset = dataset
-    self.p = args
-    self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-    self.tokenizer.pad_token = self.tokenizer.eos_token
-
-  def __len__(self):
-    return len(self.dataset)
-
-  def __getitem__(self, idx):
-    return self.dataset[idx]
-
-  def pad_data(self, data):
-    sents = [x[0] for x in data]
-    sent_ids = [x[1] for x in data]
-
-    encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
-    token_ids = torch.LongTensor(encoding['input_ids'])
-    attention_mask = torch.LongTensor(encoding['attention_mask'])
-
-    return token_ids, attention_mask, sents, sent_ids
-
-  def collate_fn(self, all_data):
-    token_ids, attention_mask, sents, sent_ids = self.pad_data(all_data)
-
-    batched_data = {
-      'token_ids': token_ids,
-      'attention_mask': attention_mask,
-      'sents': sents,
-      'sent_ids': sent_ids
-    }
-
-    return batched_data
-
-
-# Load the data: a list of (sentence, label).
-def load_data(filename, flag='train'):
-  num_labels = {}
-  data = []
-  if flag == 'test':
-    with open(filename, 'r') as fp:
-      for record in csv.DictReader(fp, delimiter='\t'):
-        sent = record['sentence'].lower().strip()
-        sent_id = record['id'].lower().strip()
-        data.append((sent, sent_id))
-  else:
-    with open(filename, 'r') as fp:
-      for record in csv.DictReader(fp, delimiter='\t'):
-        sent = record['sentence'].lower().strip()
-        sent_id = record['id'].lower().strip()
-        label = int(record['sentiment'].strip())
-        if label not in num_labels:
-          num_labels[label] = len(num_labels)
-        data.append((sent, label, sent_id))
-    print(f"load {len(data)} data from {filename}")
-
-  if flag == 'train':
-    return data, len(num_labels)
-  else:
-    return data
 
 # Evaluate the model on test examples.
 def model_test_eval(dataloader, model, device):
@@ -316,96 +214,142 @@ def model_eval(dataloader, model, device, tqdm_title = "Eval Batches"):
   acc = accuracy_score(y_true, y_pred)
 
   return acc, f1, y_pred, y_true, sents, sent_ids
-  
-def train(args):
+
+def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_args, model_config, train_metric = False, valid_metric = True):
+  """
+  Main routine for classifier training
+
+  Args:
+      model: Classifier model
+      optimizer: Model Optimizer
+      train_dataloader: Training Dataloader
+      valid_dataloader: Validation Dataloader.
+      trainer_args: Arguments for the trainer. Contains attributes: epochs, filepath (for checkpoints)
+      model_config: Config for the model.
+      train_metric: Report traning set metrics. Default to False
+      valid_metric: Report validation set metrics. Defaults to True
+  """
   device = select_device()
-  
-  # Create the data and its corresponding datasets and dataloader.
-  train_data, num_labels = load_data(args.train, 'train')
-  dev_data = load_data(args.dev, 'valid')
-
-  train_dataset = SentimentDataset(train_data, args)
-  dev_dataset = SentimentDataset(dev_data, args)
-
-  train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size,
-                                collate_fn=train_dataset.collate_fn)
-  dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=args.batch_size,
-                              collate_fn=dev_dataset.collate_fn)
-
-  # Init model.
-  config = {'hidden_dropout_prob': args.hidden_dropout_prob,
-            'num_labels': num_labels,
-            'hidden_size': 768,
-            'data_dir': '.',
-            'fine_tune_mode': args.fine_tune_mode,
-            "prediction_head": args.prediction_head}
-
-  config = SimpleNamespace(**config)
-  
-  # TODO: Define your prediction head here!!!
-  head = construct_prediction_head(config, args.prediction_head)
-  
-  model = GPT2SentimentClassifier(config, prediction_head = head)
   model = model.to(device)
+  best_dev_acc = 0.0
+  for epoch in range(trainer_args.epochs):
+      metrics = train_one_epoch(model, train_dataloader, valid_dataloader,
+                                optimizer, device, train_metric, valid_metric, f"Epoch {epoch}")
+      # Report training metrics
+      train_loss = metrics["train_loss"]
+      print(f"Epoch {epoch}: train loss :: {train_loss :.3f}", end = "")
+      if train_metric: 
+        train_acc = metrics["train_acc"]
+        print(f", train acc :: {train_acc :.3f}", end = "")
+      if valid_metric:
+        valid_acc = metrics["valid_acc"]
+        print(f", dev acc :: {valid_acc :.3f}", end = "")
+      print("")
+      # Save model checkpoint if needed.
+      if valid_metric and valid_acc > best_dev_acc:
+        best_dev_acc = valid_acc
+        save_model_checkpoint(trainer_args.filepath, model, model_config, optimizer = optimizer, args = trainer_args)
+      elif not valid_metric: # Save checkpoint every single epochs
+        filename = trainer_args + str(epoch)
+        save_model_checkpoint(filename, model, model_config, optimizer = optimizer, args = trainer_args)
+  
+def train_init(program_args):
+  """
+  Initialize the trainer object.
 
-  # ! Only apply weight decay for training full network!
-  lr = args.lr
-  optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-3)
-  best_dev_acc = 0
+  Args:
+      program_args: Program Arguments
+  """
+  a = program_args
+  # Loads the train and valid dataloaders
+  train_dl, num_labels = get_sentiment_dataloader(a.train, "train", batch_size = a.batch_size,
+                                      num_workers = a.num_workers)
+  valid_dl = get_sentiment_dataloader(a.dev, "valid", batch_size = a.batch_size, 
+                                      num_workers = a.num_workers)
+  # Initialize the classifier config
+  def _get_n_embd(gpt_kind):
+    if gpt_kind == "gpt2":
+      return 768
+    if gpt_kind == "gpt2-medium":
+      return 1024
+    if gpt_kind == "gpt2-large":
+      return 1280
+    if gpt_kind == "gpt2-xl":
+      return 1600
+    
+  clf_config = {
+    "hidden_dropout_prob" : a.hidden_dropout_prob,
+    "hidden_size" : _get_n_embd(a.gpt_kind),
+    "num_labels": num_labels,
+    "fine_tune_mode": a.fine_tune_mode,
+    "clf_kind": a.prediction_head,
+    "gpt_kind": a.gpt_kind
+  }
+  clf_config = SimpleNamespace(**clf_config)
+  # Initialize prediction head:
+  clf_head = construct_prediction_head(clf_config.hidden_size, 
+                                       clf_config.num_labels,
+                                       a.prediction_head)
+  # Initialize classifier and GPT backbone
+  gpt = GPT2Model.from_pretrained(a.gpt_kind)
+  clf = GPT2SentimentClassifier(clf_config, gpt, prediction_head = clf_head)
+  # Initialize optimizer:
+  optim_config = {
+    "lr" : a.lr,
+    "weight_decay": a.weight_decay
+  }
+  opt = set_optimizer(clf.parameters(), **optim_config)
+  # Generate Return object:
+  return {
+    "model": clf,
+    "optimizer": opt,
+    "train_dataloader": train_dl,
+    "valid_dataloader": valid_dl,
+    "trainer_args": a,
+    "model_config": clf_config,
+    "train_metric": True,
+    "valid_metric": True
+  } # Simply unpack this return object as train_main's arguments
 
-  # Run for the specified number of epochs.
-  for epoch in range(args.epochs):
-      metrics = train_one_epoch(model, train_dataloader, dev_dataloader,
-                                optimizer, device, True, True, f"Epoch-{epoch}")
-
-      train_loss, train_acc, dev_acc = metrics["train_loss"], metrics["train_acc"], metrics["valid_acc"]
-
-      if dev_acc > best_dev_acc:
-        best_dev_acc = dev_acc
-        save_model(model, optimizer, args, config, args.filepath)
-
-      print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
-
-
-def test(args):
-  with torch.no_grad():
+@torch.no_grad
+def test(program_args):
     device = select_device()
-    saved = torch.load(args.filepath, weights_only = False)
-    config = saved['model_config']
-    # Load prediction head
-    head = construct_prediction_head(config, config.prediction_head)
-    model = GPT2SentimentClassifier(config, head)
-    model.load_state_dict(saved['model'])
+    a = program_args
+    # Load our checkpoint
+    ckpt = torch.load(a.filepath, weights_only=False)
+    clf_config = ckpt["model_config"]
+    # Load prediction head and GPT2  model
+    clf_head = construct_prediction_head(clf_config.hidden_size, clf_config.num_labels, clf_config.clf_kind)
+    gpt = GPT2Model.from_pretrained(clf_config.gpt_kind)
+    model = GPT2SentimentClassifier(clf_config, gpt, clf_head)
+    model.load_state_dict(ckpt["model"])
     model = model.to(device)
-    print(f"load model from {args.filepath}")
+    print(f"Model loaded successfully from {a.filepath}.")
+    
+    # Obtain dataloader for dev and test sets
+    dev_dl = get_sentiment_dataloader(a.dev, "valid", batch_size = a.batch_size,
+                                      num_workers = a.num_workers)
+    test_dl = get_sentiment_dataloader(a.test, "test", batch_size = a.batch_size, 
+                                      num_workers = a.num_workers)
 
-    dev_data = load_data(args.dev, 'valid')
-    dev_dataset = SentimentDataset(dev_data, args)
-    dev_dataloader = DataLoader(dev_dataset, shuffle=False, batch_size=args.batch_size,
-                                collate_fn=dev_dataset.collate_fn)
-
-    test_data = load_data(args.test, 'test')
-    test_dataset = SentimentTestDataset(test_data, args)
-    test_dataloader = DataLoader(test_dataset, shuffle=False, batch_size=args.batch_size,
-                                 collate_fn=test_dataset.collate_fn)
-
-    dev_acc, dev_f1, dev_pred, dev_true, dev_sents, dev_sent_ids = model_eval(dev_dataloader, model, device)
+    # Evaluate
+    dev_acc, dev_f1, dev_pred, dev_true, dev_sents, dev_sent_ids = model_eval(
+      dev_dl, model, device)
     print('DONE DEV')
 
-    test_pred, test_sents, test_sent_ids = model_test_eval(test_dataloader, model, device)
+    test_pred, test_sents, test_sent_ids = model_test_eval(test_dl, model, device)
     print('DONE Test')
 
-    with open(args.dev_out, "w+") as f:
+    with open(a.dev_out, "w+") as f:
       print(f"dev acc :: {dev_acc :.3f}")
       f.write(f"id \t Predicted_Sentiment \n")
       for p, s in zip(dev_sent_ids, dev_pred):
         f.write(f"{p}, {s} \n")
 
-    with open(args.test_out, "w+") as f:
+    with open(a.test_out, "w+") as f:
       f.write(f"id \t Predicted_Sentiment \n")
       for p, s in zip(test_sent_ids, test_pred):
         f.write(f"{p}, {s} \n")
-
 
 def get_args():
   parser = argparse.ArgumentParser()
@@ -414,59 +358,68 @@ def get_args():
   parser.add_argument("--fine-tune-mode", type=str,
                       help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
                       choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
+  parser.add_argument("--gpt-kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "distilgpt2"), default="gpt2")
   parser.add_argument("--prediction-head", type=str,
                       help="Type of prediction head",
                       choices = ("linear", "mlp"), default = "linar")
-  parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
+  parser.add_argument("--batch_size", help='Batch Size. Recommends 64+ for GPU.', type=int, default=8)
+  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 1-4 for GPU.', type = int, default = 0)
   parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
   parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
                       default=1e-3)
+  parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
 
   args = parser.parse_args()
   return args
 
 if __name__ == "__main__":
   args = get_args()
-  seed_everything(args.seed)
+  set_seed(args.seed)
 
   print('Training Sentiment Classifier on SST...')
   config = SimpleNamespace(
     filepath='sst-classifier.pt',
     lr=args.lr,
+    weight_decay = args.weight_decay,
     prediction_head=args.prediction_head,
     epochs=args.epochs,
     batch_size=args.batch_size,
+    num_workers = args.num_workers,
+    gpt_kind = args.gpt_kind,
     hidden_dropout_prob=args.hidden_dropout_prob,
+    fine_tune_mode=args.fine_tune_mode,
     train='../data/ids-sst-train.csv',
     dev='../data/ids-sst-dev.csv',
     test='../data/ids-sst-test-student.csv',
-    fine_tune_mode=args.fine_tune_mode,
     dev_out='../predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
     test_out='../predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
   )
 
-  train(config)
+  # train_main(**train_init(config))
 
-  print('Evaluating on SST...')
-  test(config)
+  # print('Evaluating on SST...')
+  # test(config)
 
   print('Training Sentiment Classifier on cfimdb...')
   config = SimpleNamespace(
     filepath='cfimdb-classifier.pt',
     lr=args.lr,
+    weight_decay = args.weight_decay,
     prediction_head=args.prediction_head,
     epochs=args.epochs,
-    batch_size=8,
+    batch_size=args.batch_size,
+    num_workers = args.num_workers,
+    gpt_kind = args.gpt_kind,
     hidden_dropout_prob=args.hidden_dropout_prob,
+    fine_tune_mode=args.fine_tune_mode,
     train='../data/ids-cfimdb-train.csv',
     dev='../data/ids-cfimdb-dev.csv',
     test='../data/ids-cfimdb-test-student.csv',
-    fine_tune_mode=args.fine_tune_mode,
     dev_out='../predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
     test_out='../predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
   )
 
-  train(config)
+  train_main(**train_init(config))
 
   print('Evaluating on cfimdb...')
   test(config)

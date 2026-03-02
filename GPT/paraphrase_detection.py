@@ -208,7 +208,7 @@ def get_args():
   args = parser.parse_args()
   return args
 
-
+# You no longer need this after my modifications to gpt2.py.
 def add_arguments(args):
   """Add arguments that are deterministic on model size."""
   if args.model_size == 'gpt2':
