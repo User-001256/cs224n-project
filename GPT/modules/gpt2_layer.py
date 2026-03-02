@@ -3,13 +3,17 @@ from torch import nn
 import torch.nn.functional as F
 
 from modules.attention import CausalSelfAttention
+from config import GPT2Config
 
 ## Note:
 ## config.hidden_size should be D (d_model) according to our convention.
 
 class GPT2Layer(nn.Module):
-  def __init__(self, config):
+  def __init__(self, config:GPT2Config):
     super().__init__()
+    # Save config
+    self.config = config
+
     # Multi-head attention.
     self.self_attention = CausalSelfAttention(config)
     # Auxillary Modules for multi-headed attention
@@ -30,6 +34,29 @@ class GPT2Layer(nn.Module):
       # Drop-out (Applied after FFN, before residual add)
     self.ffn_dropout = nn.Dropout(config.hidden_dropout_prob)
     
+  def _attn(self, x, attn_mask):
+    """
+    Subroutine of attn_forward without residual add.
+    """
+    # Apply Layernorm before going into the attention layer
+    attn_in = self.attention_layer_norm(x)
+    # Apply scaled dot-product attention with output projection
+    attn_out = self.attention_dense(self.self_attention(attn_in, attn_mask))
+    # Apply drop-out
+    return self.attention_dropout(attn_out)
+  
+  def _ffn(self, x):
+    """
+    Subroutine of ffn_forward without residual add.
+    """
+    # Apply layer norm for FFN input
+    ffn_in = self.ffn_layer_norm(x)
+    # Obtain FFN output
+    ffn_out = self.ffn_out_dense(self.ffn_act_fn(self.ffn_in_dense(ffn_in)))
+    # Apply dropout
+    return self.ffn_dropout(ffn_out)
+    
+    
   def attn_forward(self, x, attn_mask):
     """
     Attention component of the GPT-2 block
@@ -41,15 +68,7 @@ class GPT2Layer(nn.Module):
     Returns:
         Output. Same shape as input.
     """
-    # Save the module input for residual add
-    module_input = x 
-    # Apply Layernorm before going into the attention layer
-    attn_in = self.attention_layer_norm(x)
-    # Apply scaled dot-product attention with output projection
-    attn_out = self.attention_dense(self.self_attention(attn_in, attn_mask))
-    # Apply drop-out, then residual add
-    module_output = module_input + self.attention_dropout(attn_out)
-    return module_output
+    return x + self._attn(x, attn_mask)
   
   def ffn_forward(self, x):
     """
@@ -61,15 +80,7 @@ class GPT2Layer(nn.Module):
     Returns:
         Output. Same shape as the input.
     """
-    # Save the moduel input for residual add
-    module_input = x
-    # Apply layer norm for FFN input
-    ffn_in = self.ffn_layer_norm(x)
-    # Obtain FFN output
-    ffn_out = self.ffn_out_dense(self.ffn_act_fn(self.ffn_in_dense(ffn_in)))
-    # Apply dropout, then residual add
-    module_output = module_input + self.ffn_dropout(ffn_out)
-    return module_output
+    return x + self._ffn(x)
 
   def forward(self, x, attention_mask):
     """

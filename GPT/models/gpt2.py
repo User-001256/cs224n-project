@@ -5,7 +5,6 @@ This file has been re-written for better pre-trained weights integration.
 import torch
 from torch import nn
 from transformers import GPT2Model as HFGPT2Model
-from transformers import GPT2Config as HFGPT2Config
 
 from config import GPT2Config
 from models.base_gpt import GPTPreTrainedModel
@@ -22,7 +21,7 @@ class GPT2Model(GPTPreTrainedModel):
   3. A linear transformation layer for the [CLS] token (used in self.forward, as given).
   """
 
-  def __init__(self, config):
+  def __init__(self, config:GPT2Config):
     super().__init__(config)
     self.config = config
 
@@ -36,7 +35,7 @@ class GPT2Model(GPTPreTrainedModel):
     self.register_buffer('position_ids', position_ids)
 
     # GPT-2 layers.
-    self.gpt_layers = nn.ModuleList([GPT2Layer(config) for _ in range(config.num_hidden_layers)])
+    self.blocks = nn.ModuleList([GPT2Layer(config) for _ in range(config.num_hidden_layers)])
 
     # Final layer norm.
     self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
@@ -71,7 +70,7 @@ class GPT2Model(GPTPreTrainedModel):
     # (with a value of a large negative number).
     extended_attention_mask: torch.Tensor = get_extended_attention_mask(attention_mask, self.dtype)
     # Pass the hidden states through the encoder layers.
-    for i, layer_module in enumerate(self.gpt_layers):
+    for i, layer_module in enumerate(self.blocks):
       # Feed the encoding from the last bert_layer to the next.
       hidden_states = layer_module(hidden_states, extended_attention_mask)
 
@@ -115,7 +114,7 @@ class GPT2Model(GPTPreTrainedModel):
     # Load all transformer block weights:
     target_weights = target_model.state_dict()
     d = self.config.hidden_size #d_model
-    for i, layer in enumerate(self.gpt_layers):
+    for i, layer in enumerate(self.blocks):
       # Remap the Q,K,V weights from a conv1d to 3 linear projections
       layer.self_attention.query.weight.data = target_weights[f'h.{i}.attn.c_attn.weight'][:, :d].T
       layer.self_attention.query.bias.data = target_weights[f'h.{i}.attn.c_attn.bias'][:d]

@@ -1,6 +1,7 @@
 import torch
 
 from models.gpt2 import GPT2Model
+from models.gpt2_adapt import *
 
 from transformers import GPT2Model as OpenAIGPT2Model
 from utils import model_size_to_params
@@ -14,6 +15,8 @@ def test_gpt2(model_size='gpt2'):
   openai_model = OpenAIGPT2Model.from_pretrained(model_size)
   gpt = GPT2Model.from_pretrained(model=model_size, **model_size_to_params(model_size))
 
+  apply_adapter(gpt, 100)
+
   outputs = gpt(sent_ids, att_mask)
   openai_outputs = openai_model(input_ids=sent_ids, attention_mask=att_mask, output_hidden_states=True).hidden_states[-1]
 
@@ -26,6 +29,9 @@ def test_gpt2(model_size='gpt2'):
   print("Your GPT2 implementation is correct!")
 
 if __name__ == '__main__':
-  # test_gpt2('gpt2')
-  test_gpt2('gpt2-medium')
+  test_gpt2('gpt2')
+  # test_gpt2('gpt2-medium')
   # test_gpt2('gpt2-large')
+  # model = GPT2Model.from_pretrained("gpt2")
+  # for name, module in model.named_modules():
+  #   print(name, module)

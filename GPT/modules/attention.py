@@ -2,6 +2,7 @@ import torch
 
 from einops import rearrange
 from torch import nn
+from config import GPT2Config
 
 # This file has been modified to make things a bit easier to follow.
 # Shape Abbreviations:
@@ -14,7 +15,7 @@ from torch import nn
 MASK_VALUE = -10000.0 # Large negative number for masking (Alternatively, use -torch.inf)
 
 class CausalSelfAttention(nn.Module):
-  def __init__(self, config):
+  def __init__(self, config:GPT2Config):
     super().__init__()
 
     self.num_attention_heads = config.num_attention_heads

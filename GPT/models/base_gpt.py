@@ -1,12 +1,12 @@
 from torch import dtype
 
-from config import PretrainedConfig
+from config import GPT2Config
 from utils import *
 
 
 class GPTPreTrainedModel(nn.Module):
 
-  def __init__(self, config: PretrainedConfig, *inputs, **kwargs):
+  def __init__(self, config: GPT2Config, *inputs, **kwargs):
     super().__init__()
     self.config = config
     self.name_or_path = config.name_or_path
