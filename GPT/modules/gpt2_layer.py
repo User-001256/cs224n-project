@@ -12,7 +12,8 @@ class GPT2Layer(nn.Module):
   def __init__(self, config:GPT2Config):
     super().__init__()
     # Save config
-    self.config = config
+    self.model_dim = config.hidden_size
+    self.ffn_act_dim = config.intermediate_size
 
     # Multi-head attention.
     self.self_attention = CausalSelfAttention(config)
@@ -36,7 +37,14 @@ class GPT2Layer(nn.Module):
     
   def _attn(self, x, attn_mask):
     """
-    Subroutine of attn_forward without residual add.
+    Attention component of the GPT-2 block
+
+    Args:
+        x: Input to the attention module. Shape: (b, t, D)
+        attn_mask: Attention mask. See CausalSelfAttention documentation for details.
+
+    Returns:
+        Output. Same shape as input.
     """
     # Apply Layernorm before going into the attention layer
     attn_in = self.attention_layer_norm(x)
@@ -47,31 +55,6 @@ class GPT2Layer(nn.Module):
   
   def _ffn(self, x):
     """
-    Subroutine of ffn_forward without residual add.
-    """
-    # Apply layer norm for FFN input
-    ffn_in = self.ffn_layer_norm(x)
-    # Obtain FFN output
-    ffn_out = self.ffn_out_dense(self.ffn_act_fn(self.ffn_in_dense(ffn_in)))
-    # Apply dropout
-    return self.ffn_dropout(ffn_out)
-    
-    
-  def attn_forward(self, x, attn_mask):
-    """
-    Attention component of the GPT-2 block
-
-    Args:
-        x: Input to the attention module. Shape: (b, t, D)
-        attn_mask: Attention mask. See CausalSelfAttention documentation for details.
-
-    Returns:
-        Output. Same shape as input.
-    """
-    return x + self._attn(x, attn_mask)
-  
-  def ffn_forward(self, x):
-    """
     Feed-forward component of the GPT-2 block
 
     Args:
@@ -80,10 +63,17 @@ class GPT2Layer(nn.Module):
     Returns:
         Output. Same shape as the input.
     """
-    return x + self._ffn(x)
-
+    # Apply layer norm for FFN input
+    ffn_in = self.ffn_layer_norm(x)
+    # Obtain FFN output
+    ffn_out = self.ffn_out_dense(self.ffn_act_fn(self.ffn_in_dense(ffn_in)))
+    # Apply dropout
+    return self.ffn_dropout(ffn_out)
+    
   def forward(self, x, attention_mask):
     """
     Forward method of attention block. x -> self attention -> ffn -> out.
+    Residual add also applied here.
     """
-    return self.ffn_forward(self.attn_forward(x, attention_mask))
+    attn_out = x + self._attn(x, attention_mask)
+    return attn_out + self._ffn(attn_out)

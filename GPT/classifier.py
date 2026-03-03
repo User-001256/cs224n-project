@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from torch_utils import *
 from datasets import get_sentiment_dataloader
+from models.gpt2_adapt import *
 
   
 def construct_prediction_head(hidden_size, num_labels, kind = "linear"):
@@ -293,6 +294,7 @@ def train_init(program_args):
                                        a.prediction_head)
   # Initialize classifier and GPT backbone
   gpt = GPT2Model.from_pretrained(a.gpt_kind)
+  apply_IA3(gpt)
   clf = GPT2SentimentClassifier(clf_config, gpt, prediction_head = clf_head)
   # Initialize optimizer:
   optim_config = {
