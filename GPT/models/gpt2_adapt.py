@@ -16,7 +16,7 @@ from modules.gpt2_layer import GPT2Layer
 class BottleneckAdapter(nn.Module):
     """
     An sequential bottleneck adapter class proposed by Houlsby et. al.
-    Baasically a small FFN with a residual add.
+    Baasically a small FFN with residual add.
     """
     def __init__(self, input_dim, intermediate_dim):
         super().__init__()
@@ -47,6 +47,10 @@ class BottleneckAdapter(nn.Module):
 
 # Adapter Transformer Block:
 class AdapterGPT2Layer(nn.Module):
+    """
+    GPT-2 block with injected bottleneck adapters. Adapters will be placed 
+    after the multiheaded attention and FFN but before their residual adds.
+    """
     def __init__(self, base_layer: GPT2Layer, adapter_dim: int, initializer_range = 0.02, identity_init = True):
         super().__init__()
         # Base gpt2layer
@@ -71,7 +75,9 @@ class AdapterGPT2Layer(nn.Module):
     
 def apply_adapter(model: GPT2Model, adapter_dim):
     """
-    Apply adapter PEFT to our GPT2 Model
+    Apply adapters to all GPT2 Blocks within our GPT2 model.
+    
+    TODO: Add compatibility to compose with IA3.
 
     Args:
         model: GPT2 Model
@@ -90,6 +96,14 @@ def apply_adapter(model: GPT2Model, adapter_dim):
 ####################
 
 class IA3SelfAttention(nn.Module):
+    """
+    IA3 (Infused Adapter by Inhibiting and Amplifying Inner Activations) 
+    Adapter self-attention module. Proposed by Liu et.al:
+    https://arxiv.org/pdf/2205.05638
+    
+    Injects 2 vectors of dimension d_model, which is elementwise multiplied
+    to the key and value vectors.
+    """
     def __init__(self, base_attention: CausalSelfAttention):
         super().__init__()
         self.attn = base_attention
@@ -109,6 +123,13 @@ class IA3SelfAttention(nn.Module):
         
 # GPT2 Layer with IA3 Adapter
 class IA3GPT2Layer(nn.Module):
+    """
+    IA3 (Infused Adapter by Inhibiting and Amplifying Inner Activations) Adapter GPT Block.
+
+    Besides the learnable vectors injected at self-attention, an additional 
+    learnable vector of dimension 4 * d_model is injected at the intermediate
+    activations of the FFN module. Elementwise mult is applied after activation.
+    """
     def __init__(self, base_layer:GPT2Layer):
         super().__init__()
         # Compose on the original base GPT2Layer
@@ -141,10 +162,9 @@ class IA3GPT2Layer(nn.Module):
 
 def apply_IA3(model: GPT2Model):
     """
-    Apply IA3 Adapters to GPT2 model
-
-    Args:
-        model: GPT2 Model
+    Apply IA3 adapter to all GPT-2 blocks in our GPT2 Model.
+    
+    TODO: Add compatibility to compose with Bottleneck Adapters.
     """
     new_blocks = []
     for b in model.blocks:
@@ -171,7 +191,7 @@ def apply_lora(model:GPT2Model, target_modules:list[str],
         alpha: LoRA scaling factor. Defaults to None.
     
     Returns:
-    GPT-2 Model with LoRA Modules applied.    
+    GPT-2 Model with LoRA Modules applied. This may be composed with Bottleneck Adapters or IA3 adapters.
     """
     if alpha is None: alpha = 2 * rank
     lora_config = LoraConfig(

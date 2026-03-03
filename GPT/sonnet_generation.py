@@ -24,17 +24,23 @@ from datasets import SonnetsDataset
 from models.gpt2 import GPT2Model
 
 from torch_utils import *
+from generation_utils import *
 
 class SonnetGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
 
   def __init__(self, args):
     super().__init__()
+    # TODO: Maybe add a PEFT for self.gpt?
     self.gpt = GPT2Model.from_pretrained(args.gpt_kind)
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
-    # By default, fine-tune the full model. TODO: this is maybe not idea.
+    # Define the generation logit processors
+    self.temp_process = None
+    self.topk_process = None
+    self.topp_process = None
+    
     for param in self.gpt.parameters():
       param.requires_grad = True
 
@@ -50,13 +56,50 @@ class SonnetGPT(nn.Module):
     logits = self.gpt.hidden_state_to_token(hidden_states)
     return logits
 
+  @property
+  def device(self):
+    return next(self.gpt.parameters()).device
+    
+  def update_logit_processors(self, temperature = None, k = None, p = None):
+    """
+    Update the generation logit processors
 
-  def get_device(self):
-    for param in self.gpt.parameters():
-      return param.device
+    Args:
+        temperature: For temperature scaling.
+        k: For top K sampling
+        p: For top P sampling
+    """
+    if temperature is not None:
+      self.temp_process = TemperatureScaling(temperature)
+    if k is not None:
+      self.topk_process = TopKFilter(k)
+    if p is not None:
+      self.topp_process = TopPFilter(p)
+    
+  @torch.no_grad
+  def logit_process(self, logits:torch.Tensor):
+    """
+    Process the input logits with the model's logit processors
 
-  @torch.no_grad()
-  def generate(self, encoding, temperature=0.7, top_p=0.9, max_length=128):
+    Args:
+        logits: Tensor. Shape (batch, vocab_size)
+
+    Returns:
+        Processed logits
+    """
+    # We shall apply the logit processors in the canonical order
+    # temperature -> top k -> top p
+    x = logits
+    if self.temp_process is not None:
+      x = self.temp_process(x)
+    if self.topk_process is not None:
+      x = self.topk_process(x)
+    if self.topp_process is not None:
+      x = self.topp_process(x)
+    return x
+
+  @torch.no_grad
+  def generate(self, encoding, max_length=128, **kwargs):
     """
     Generates an original sonnet using top-p sampling and softmax temperature.
 
@@ -64,30 +107,37 @@ class SonnetGPT(nn.Module):
     In particular, generating multiple sequences and choosing the best with beam search is one avenue. Top_k is another;
     there are many.
     """
-    token_ids = encoding.to(self.get_device())
-    attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.get_device())
-
-
+    token_ids = encoding.to(self.device)
+    attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.device)
+    
     for _ in range(max_length):
-      # Forward pass to get logits
+      # Forward pass to get logits. 
       logits_sequence = self.forward(token_ids, attention_mask)
-      logits_last_token = logits_sequence[:, -1, :] / temperature  # Apply temperature scaling
+      # Only obtain the logits of the last predicted token. Shape (batch, vocab)
+      logits = logits_sequence[:, -1, :]
+      
+      # Process the logits using temperature, topk, or topp filters
+      logits = self.logit_process(logits)
+      # Sample a token
+      sampled_token = sample_from_logits(logits)
+      
+      # logits_last_token = logits_sequence[:, -1, :] / temperature  # Apply temperature scaling
 
-      # Convert logits to probabilities
-      probs = torch.nn.functional.softmax(logits_last_token, dim=-1)
+      # # Convert logits to probabilities
+      # probs = torch.nn.functional.softmax(logits_last_token, dim=-1)
 
-      # Top-p (nucleus) sampling
-      sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-      cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-      top_p_mask = cumulative_probs <= top_p
-      top_p_mask[..., 1:] = top_p_mask[..., :-1].clone()  # Shift mask right for proper thresholding
-      top_p_mask[..., 0] = True  # Always include the highest probability token
-      filtered_probs = sorted_probs * top_p_mask  # Zero out unlikely tokens
-      filtered_probs /= filtered_probs.sum(dim=-1, keepdim=True)  # Normalize probabilities
+      # # Top-p (nucleus) sampling
+      # sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+      # cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+      # top_p_mask = cumulative_probs <= top_p
+      # top_p_mask[..., 1:] = top_p_mask[..., :-1].clone()  # Shift mask right for proper thresholding
+      # top_p_mask[..., 0] = True  # Always include the highest probability token
+      # filtered_probs = sorted_probs * top_p_mask  # Zero out unlikely tokens
+      # filtered_probs /= filtered_probs.sum(dim=-1, keepdim=True)  # Normalize probabilities
 
-      # Sample from filtered distribution
-      sampled_index = torch.multinomial(filtered_probs, 1)
-      sampled_token = sorted_indices.gather(dim=-1, index=sampled_index)
+      # # Sample from filtered distribution
+      # sampled_index = torch.multinomial(filtered_probs, 1)
+      # sampled_token = sorted_indices.gather(dim=-1, index=sampled_index)
 
       # Stop if end-of-sequence token is reached
       if sampled_token.item() == self.tokenizer.eos_token_id:
@@ -96,7 +146,7 @@ class SonnetGPT(nn.Module):
       # Append sampled token
       token_ids = torch.cat([token_ids, sampled_token], dim=1)
       attention_mask = torch.cat(
-        [attention_mask, torch.ones((1, 1), dtype=torch.int64).to(self.get_device())], dim=1
+        [attention_mask, torch.ones((1, 1), dtype=torch.int64).to(self.device)], dim=1
       )
 
     generated_output = self.tokenizer.decode(token_ids[0].cpu().numpy().tolist())[3:]
@@ -117,7 +167,7 @@ def save_model(model, optimizer, args, filepath):
   print(f"save the model to {filepath}")
 
 
-def train(args, preview_valid = False):
+def train(args, preview_valid = True):
   device = select_device()
   # Create the data and its corresponding datasets and dataloader.
   sonnet_dataset = SonnetsDataset(args.sonnet_path)
@@ -129,6 +179,10 @@ def train(args, preview_valid = False):
 
   model = SonnetGPT(args)
   model = model.to(device)
+  
+  # If we want to preview validation set, also need to initialize sampling hyperparameters
+  if preview_valid:
+    model.update_logit_processors(args.temperature, args.top_k, args.top_p)
 
   # Initialize optimizer:
   optim_config = {
@@ -224,6 +278,7 @@ def get_args():
   parser.add_argument("--temperature", type=float, help="softmax temperature.", default=1.2)
   parser.add_argument("--top_p", type=float, help="Cumulative probability distribution for nucleus sampling.",
                       default=0.9)
+  parser.add_argument("--top_k", type=int, help="Thresholding count for TopK Sampling.", default = 50)
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
   parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
@@ -232,26 +287,6 @@ def get_args():
 
   args = parser.parse_args()
   return args
-
-# GPT2Model.from_pretrained automatically infers hyperparameters.
-# No need of this.
-# def add_arguments(args):
-#   """Add arguments that are deterministic on model size."""
-#   if args.model_size == 'gpt2':
-#     args.d = 768
-#     args.l = 12
-#     args.num_heads = 12
-#   elif args.model_size == 'gpt2-medium':
-#     args.d = 1024
-#     args.l = 24
-#     args.num_heads = 16
-#   elif args.model_size == 'gpt2-large':
-#     args.d = 1280
-#     args.l = 36
-#     args.num_heads = 20
-#   else:
-#     raise Exception(f'{args.model_size} is not supported.')
-#   return args
 
 if __name__ == "__main__":
   args = get_args()
