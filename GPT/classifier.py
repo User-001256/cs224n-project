@@ -51,8 +51,6 @@ def train_one_epoch(model:GPT2Classifier,
                     valid_dataloader,
                     optimizer:torch.optim.Optimizer,
                     device = torch.device("cpu"),
-                    eval_train = False,
-                    eval_valid = True,
                     tqdm_title = "Training Batches"):
   """
   Wrapper function for one-epoch training loop. Used for the GPT2 Sentiment Classifier.
@@ -67,8 +65,6 @@ def train_one_epoch(model:GPT2Classifier,
       eval_valid: Evaluate on Dev Set? Defaults to True.
   """
   model.train()
-  train_loss = 0
-  num_batch = 0
   for batch in tqdm(train_dataloader, desc=tqdm_title, leave = False):
       b_ids, b_mask, b_labels = (batch['token_ids'],
                                  batch['attention_mask'], batch['labels'])
@@ -84,23 +80,17 @@ def train_one_epoch(model:GPT2Classifier,
 
       loss.backward()
       optimizer.step()
-
-      train_loss += loss.item()
-      num_batch += 1
-  # Finalize training loss
-  train_loss = train_loss / num_batch
-  # Optionally Evaluate model
-  out = {"train_loss": train_loss}
-  if eval_train:
-      model.eval()
-      train_acc, train_f1, *_ = model_eval(train_dataloader, model, device, "Eval Train")
-      out["train_acc"] = train_acc
-      out["train_f1"] = train_f1
-  if eval_valid:
-      model.eval()
-      dev_acc, dev_f1, *_ = model_eval(valid_dataloader, model, device, "Eval Dev")
-      out["valid_acc"] = dev_acc
-      out["valid_f1"] = dev_f1
+  # Evaluate Model on both training and validaiton set
+  out = dict()
+  model.eval()
+  train_acc, train_f1, train_loss, *_ = model_eval(train_dataloader, model, device, "Eval Train")
+  out["train_loss"] = train_loss
+  out["train_acc"] = train_acc
+  out["train_f1"] = train_f1
+  dev_acc, dev_f1, dev_loss, *_ = model_eval(valid_dataloader, model, device, "Eval Dev")
+  out["valid_loss"] = dev_loss
+  out["valid_acc"] = dev_acc
+  out["valid_f1"] = dev_f1
   return out
 
 # Evaluate the model on dev examples. Don't track gradients.
@@ -111,7 +101,8 @@ def model_eval(dataloader, model, device, tqdm_title = "Eval Batches"):
   y_pred = []
   sents = []
   sent_ids = []
-  for step, batch in enumerate(tqdm(dataloader, desc=tqdm_title, leave = False)):
+  loss = 0.0
+  for batch in tqdm(dataloader, desc=tqdm_title, leave = False):
     b_ids, b_mask, b_labels, b_sents, b_sent_ids = batch['token_ids'], batch['attention_mask'], \
                                                    batch['labels'], batch['sents'], batch['sent_ids']
 
@@ -119,6 +110,7 @@ def model_eval(dataloader, model, device, tqdm_title = "Eval Batches"):
     b_mask = b_mask.to(device)
 
     logits = model(b_ids, b_mask)
+    loss += F.cross_entropy(logits, b_labels.to(device).view(-1), reduction='sum')
     logits = logits.detach().cpu().numpy()
     preds = np.argmax(logits, axis=1).flatten()
 
@@ -131,9 +123,9 @@ def model_eval(dataloader, model, device, tqdm_title = "Eval Batches"):
   f1 = f1_score(y_true, y_pred, average='macro')
   acc = accuracy_score(y_true, y_pred)
 
-  return acc, f1, y_pred, y_true, sents, sent_ids
+  return acc, f1, loss / len(y_true), y_pred, y_true, sents, sent_ids
 
-def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_args, model_config, train_metric = False, valid_metric = True):
+def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_args, model_config):
   """
   Main routine for classifier training
 
@@ -150,27 +142,27 @@ def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_arg
   device = select_device()
   model = model.to(device)
   best_dev_acc = 0.0
+  es = EarlyStoppingScheduler()
   for epoch in range(trainer_args.epochs):
       metrics = train_one_epoch(model, train_dataloader, valid_dataloader,
-                                optimizer, device, train_metric, valid_metric, f"Epoch {epoch}")
+                                optimizer, device, f"Epoch {epoch}")
       # Report training metrics
+      print(f"Epoch {epoch}: ", end = "")
       train_loss = metrics["train_loss"]
-      print(f"Epoch {epoch}: train loss :: {train_loss :.3f}", end = "")
-      if train_metric: 
-        train_acc = metrics["train_acc"]
-        print(f", train acc :: {train_acc :.3f}", end = "")
-      if valid_metric:
-        valid_acc = metrics["valid_acc"]
-        print(f", dev acc :: {valid_acc :.3f}", end = "")
-      print("")
+      train_acc = metrics["train_acc"]
+      print(f"train loss/acc :: ({train_loss:.3f}, {train_acc:.3f}),  ", end = "")
+      valid_loss = metrics["valid_loss"]
+      valid_acc = metrics["valid_acc"]
+      print(f"dev loss/acc :: ({valid_loss:.3f}, {valid_acc:.3f})")
       # Save model checkpoint if needed.
-      if valid_metric and valid_acc > best_dev_acc:
+      if valid_acc > best_dev_acc:
         best_dev_acc = valid_acc
         save_fine_tune_checkpoint(trainer_args.filepath, model, model_config)
-      elif not valid_metric: # Save checkpoint every single epochs
-        filename = trainer_args.filepath + str(epoch)
-        save_fine_tune_checkpoint(filename, model, model_config)
-  
+      # Update Early Stopping:
+      es.step(valid_loss)
+      if es.stopped:
+        print(f"Early Stopping Activated at Epoch {epoch}. Halting Training.")
+      
 def train_init(program_args):
   """
   Initialize the trainer object.
@@ -233,9 +225,7 @@ def train_init(program_args):
     "train_dataloader": train_dl,
     "valid_dataloader": valid_dl,
     "trainer_args": a,
-    "model_config": model_config,
-    "train_metric": True,
-    "valid_metric": True
+    "model_config": model_config
   } # Simply unpack this return object as train_main's arguments
 
 @torch.no_grad
@@ -252,15 +242,14 @@ def test(program_args):
                                       num_workers = a.num_workers)
 
     # Evaluate
-    dev_acc, dev_f1, dev_pred, dev_true, dev_sents, dev_sent_ids = model_eval(
+    dev_acc, dev_f1, dev_loss, dev_pred, _, _, dev_sent_ids = model_eval(
       dev_dl, model, device)
-    print('DONE DEV')
+    print(f'Dev Set: acc :: {dev_acc:.3f}, macro f1 :: {dev_f1:.3f}, loss :: {dev_loss:.3f}')
 
     test_pred, test_sents, test_sent_ids = model_test_eval(test_dl, model, device)
     print('DONE Test')
 
     with open(a.dev_out, "w+") as f:
-      print(f"dev acc :: {dev_acc :.3f}")
       f.write(f"id \t Predicted_Sentiment \n")
       for p, s in zip(dev_sent_ids, dev_pred):
         f.write(f"{p}, {s} \n")

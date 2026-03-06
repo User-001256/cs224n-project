@@ -140,7 +140,9 @@ class AdapterGPT2Layer(nn.Module):
     GPT-2 block with injected bottleneck adapters. Adapters will be placed 
     after the multiheaded attention and FFN but before their residual adds.
     """
-    def __init__(self, base_layer: Union[GPT2Layer, IA3GPT2Layer], adapter_dim: int, initializer_range = 0.02, identity_init = True):
+    def __init__(self, base_layer: Union[GPT2Layer, IA3GPT2Layer], adapter_dim: int, 
+                 target_modules = ["attn", "ffn"],
+                 initializer_range = 0.02, identity_init = True):
         super().__init__()
         # Base gpt2layer
         self.base_layer = base_layer
@@ -151,14 +153,17 @@ class AdapterGPT2Layer(nn.Module):
             d_model = base_layer.base_layer.model_dim
         
         # Initialize the Adapter Modules
-        self.attention_adapter = BottleneckAdapter(d_model, adapter_dim)
-        self.ffn_adapter = BottleneckAdapter(d_model, adapter_dim)
+        self.attention_adapter = BottleneckAdapter(d_model, adapter_dim) if "attn" in target_modules else nn.Identity()
+        self.ffn_adapter = BottleneckAdapter(d_model, adapter_dim) if "ffn" in target_modules else nn.Identity()
         # Initialize weights
         self._initialize_adapter_weights(initializer_range, identity_init)
         
     def _initialize_adapter_weights(self, initializer_range, identity):
-        self.attention_adapter._init_weights(initializer_range, identity)
-        self.ffn_adapter._init_weights(initializer_range, identity)
+        try:
+            self.attention_adapter._init_weights(initializer_range, identity)
+            self.ffn_adapter._init_weights(initializer_range, identity)
+        except AttributeError:
+            pass
 
     def forward(self, x, attention_mask):
         """
@@ -168,17 +173,18 @@ class AdapterGPT2Layer(nn.Module):
         attn_out = x + self.attention_adapter(self.base_layer._attn(x, attention_mask))
         return attn_out + self.ffn_adapter(self.base_layer._ffn(attn_out))
     
-def apply_adapter(model: GPT2Model, adapter_dim = 64):
+def apply_adapter(model: GPT2Model, adapter_dim = 64, target_modules = ["attn", "ffn"]):
     """
     Apply adapters to all GPT2 Blocks within our GPT2 model.
 
     Args:
         model: GPT2 Model
         adapter_dim: Intermediate dimensions of bottleneck adapters
+        target_modules: Inject adapter in which modules? Options are "attn" and "ffn".
     """
     new_blocks = []
     for b in model.blocks:
-        new_blocks.append(AdapterGPT2Layer(b, adapter_dim, initializer_range=model.config.initializer_range))
+        new_blocks.append(AdapterGPT2Layer(b, adapter_dim, target_modules, initializer_range=model.config.initializer_range))
     model.blocks = nn.ModuleList(new_blocks)
     # Freeze the non-adapter parameters
     for n, p in model.named_parameters():

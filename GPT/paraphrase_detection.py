@@ -93,8 +93,10 @@ def train(args):
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
     model.train()
-    train_loss = 0
-    num_batches = 0
+    train_loss = 0.0
+    num_obs = 0
+    # Early Stopping
+    es = EarlyStoppingScheduler()
     for batch in tqdm(train_dl, desc=f'train-{epoch}', leave = False):
       # Get the input and move it to the gpu (I do not recommend training this model on CPU).
       b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
@@ -105,24 +107,25 @@ def train(args):
       # Compute the loss, gradients, and update the model's parameters.
       optimizer.zero_grad()
       logits = model(b_ids, b_mask)
-      preds = torch.argmax(logits, dim=1)
-      loss = F.cross_entropy(logits, labels, reduction='mean')
+      loss = F.cross_entropy(logits, labels, reduction='sum')
       loss.backward()
       optimizer.step()
 
       train_loss += loss.item()
-      num_batches += 1
+      num_obs += labels.shape[0]
 
-    train_loss = train_loss / num_batches
+    train_loss = train_loss / num_obs
 
-    dev_acc, dev_f1, *_ = model_eval_paraphrase(valid_dl, model, device)
+    dev_acc, dev_f1, dev_loss, *_ = model_eval_paraphrase(valid_dl, model, device)
 
     if dev_acc > best_dev_acc:
       best_dev_acc = dev_acc
       save_fine_tune_checkpoint(args.filepath, model.gpt, model_config)
       
-
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc :: {dev_acc :.3f}")
+    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev loss/acc/f1 :: ({dev_loss:.3f}, {dev_acc :.3f}, {dev_f1:.3f})")
+    es.step(dev_loss)
+    if es.stopped:
+      print(f"Early Stopping Activated at Epoch {epoch}. Halting Training.")
 
 
 @torch.no_grad()
@@ -137,7 +140,7 @@ def test(args):
   dev_dl =  get_paraphrase_dataloader(args.para_valid,"valid", batch_size = args.batch_size, num_workers = args.num_workers)
   test_dl = get_paraphrase_dataloader(args.para_test,  "test", batch_size = args.batch_size, num_workers = args.num_workers)
 
-  dev_para_acc, _, dev_para_y_pred, _, dev_para_sent_ids = model_eval_paraphrase(dev_dl, model, device)
+  dev_para_acc, _, _, dev_para_y_pred, _, dev_para_sent_ids = model_eval_paraphrase(dev_dl, model, device)
   print(f"dev paraphrase acc :: {dev_para_acc :.3f}")
   test_para_y_pred, test_para_sent_ids = model_test_paraphrase(test_dl, model, device)
 

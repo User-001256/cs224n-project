@@ -16,21 +16,21 @@ from datasets import (
   SonnetsDataset,
 )
 
-TQDM_DISABLE = False
-
-
 @torch.no_grad()
 def model_eval_paraphrase(dataloader, model, device):
   model.eval()  # Switch to eval model, will turn off randomness like dropout.
   y_true, y_pred, sent_ids = [], [], []
-  for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
+  loss = 0.0
+  for batch in tqdm(dataloader, desc=f'eval', leave = False):
     b_ids, b_mask, b_sent_ids, labels = batch['token_ids'], batch['attention_mask'], batch['sent_ids'], batch[
       'labels'].flatten()
 
     b_ids = b_ids.to(device)
     b_mask = b_mask.to(device)
 
-    logits = model(b_ids, b_mask).cpu().numpy()
+    logits = model(b_ids, b_mask)
+    loss += torch.nn.functional.cross_entropy(logits, labels.to(device), reduction = "sum")
+    logits = logits.detach().cpu().numpy()
     preds = np.argmax(logits, axis=1).flatten()
 
     y_true.extend(labels)
@@ -40,7 +40,7 @@ def model_eval_paraphrase(dataloader, model, device):
   f1 = f1_score(y_true, y_pred, average='macro')
   acc = accuracy_score(y_true, y_pred)
 
-  return acc, f1, y_pred, y_true, sent_ids
+  return acc, f1, loss / len(y_true), y_pred, y_true, sent_ids
 
 
 @torch.no_grad()

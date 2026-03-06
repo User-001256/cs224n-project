@@ -160,3 +160,34 @@ def summarize_peft(model:nn.Module):
         f"Percent Trainable: {100 * trainable_params / all_param:.5f}%"
         
     )
+    
+# Early Stopping Scheduler
+class EarlyStoppingScheduler(object):
+    def __init__(self, patience = 5, min_delta = 1e-3):
+        """
+        Early Stopping Scheduler
+
+        Args:
+            patience: Number of no-progress steps before stopping. Defaults to 5.
+            min_delta: Loss below the previous best loss to count as progress. Defaults to 1e-3.
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        
+        self.no_progress_counter = 0
+        self.best_loss = np.inf
+        
+        self.stopped = False
+        
+    def step(self, valid_loss):
+        # Significant Progress
+        if valid_loss < (self.best_loss - self.min_delta):
+            # Reset Counter and Log Loss
+            self.best_loss = valid_loss
+            self.no_progress_counter = 0
+        else:
+            self.no_progress_counter += 1
+            if self.no_progress_counter >= self.patience:
+                self.stopped = True
+            else:
+                print(f"Early Stopping: {self.no_progress_counter} / {self.patience}.")
