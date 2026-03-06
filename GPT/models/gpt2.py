@@ -76,7 +76,7 @@ class GPT2Model(GPTPreTrainedModel):
 
     return hidden_states
 
-  def forward(self, input_ids, attention_mask):
+  def forward(self, input_ids, attention_mask, inputs_embeds=None, **kwargs):
     """
     input_ids: [batch_size, seq_len], seq_len is the max length of the batch
     attention_mask: same size as input_ids, 1 represents non-padding tokens, 0 represents padding tokens
@@ -102,6 +102,16 @@ class GPT2Model(GPTPreTrainedModel):
       return hidden_state(s) * E^T
     """
     return hidden_state @ self.word_embedding.weight.T
+
+  def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **kwargs):
+      """
+      Minimal HF-compatible hook used by PEFT/Transformers generation utilities.
+
+      For our model, generation just needs input_ids and attention_mask.
+      """
+      if attention_mask is None:
+          attention_mask = input_ids.new_ones(input_ids.shape)
+      return {"input_ids": input_ids, "attention_mask": attention_mask}
 
   def transfer_weights(self, target_model:HFGPT2Model):
     """

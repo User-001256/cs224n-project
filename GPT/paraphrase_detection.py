@@ -24,6 +24,7 @@ from tqdm import tqdm
 from datasets import get_paraphrase_dataloader
 from evaluation import model_eval_paraphrase, model_test_paraphrase
 from models.gpt2 import GPT2Model
+from models.gpt2_adapt import apply_adapter, apply_IA3, apply_lora
 
 from torch_utils import *
 
@@ -37,7 +38,7 @@ class ParaphraseGPT(nn.Module):
 
     # By default, fine-tune the full model.
     for param in self.gpt.parameters():
-      param.requires_grad = True
+      param.requires_grad = (args.peft == "none")
 
   def forward(self, input_ids, attention_mask):
     """
@@ -82,12 +83,32 @@ def train(args):
 
   model = ParaphraseGPT(args)
   model = model.to(device)
+
+  # Apply PEFT adapters
+  if args.peft == "bottleneck":
+      apply_adapter(model.gpt, adapter_dim=args.adapter_dim)
+  elif args.peft == "ia3":
+      apply_IA3(model.gpt)
+  elif args.peft == "lora":
+      model.gpt = apply_lora(
+          model.gpt,
+          target_modules=args.lora_targets,
+          rank=args.lora_rank,
+          dropout=args.lora_dropout,
+          alpha=args.lora_alpha,
+      )
+
+  # Check trainable percentage (for PEFT, should be low)
+  trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+  total = sum(p.numel() for p in model.parameters())
+  print(f"[{args.peft}] Trainable: {trainable}/{total} = {trainable / total:.4%}")
   
   optim_config = {
     "lr" : args.lr,
     "weight_decay": args.weight_decay
   }
-  optimizer = set_optimizer(model.parameters(), **optim_config)
+  trainable_params = [p for p in model.parameters() if p.requires_grad]
+  optimizer = set_optimizer(trainable_params, **optim_config)
   best_dev_acc = 0
 
   # Run for the specified number of epochs.
@@ -131,6 +152,21 @@ def test(args):
   saved = torch.load(args.filepath)
 
   model = ParaphraseGPT(saved['args'])
+
+  # Rebuild adapter structure to match checkpoint
+  if saved["args"].peft == "bottleneck":
+      apply_adapter(model.gpt, adapter_dim=saved["args"].adapter_dim)
+  elif saved["args"].peft == "ia3":
+      apply_IA3(model.gpt)
+  elif saved["args"].peft == "lora":
+      model.gpt = apply_lora(
+          model.gpt,
+          target_modules=saved["args"].lora_targets,
+          rank=saved["args"].lora_rank,
+          dropout=saved["args"].lora_dropout,
+          alpha=saved["args"].lora_alpha,
+      )
+
   model.load_state_dict(saved['model'])
   model = model.to(device)
   model.eval()
@@ -160,8 +196,8 @@ def get_args():
   parser.add_argument("--para_train", type=str, default="../data/quora-train.csv")
   parser.add_argument("--para_dev", type=str, default="../data/quora-dev.csv")
   parser.add_argument("--para_test", type=str, default="../data/quora-test-student.csv")
-  parser.add_argument("--para_dev_out", type=str, default="../predictions/para-dev-output.csv")
-  parser.add_argument("--para_test_out", type=str, default="../predictions/para-test-output.csv")
+  parser.add_argument("--para_dev_out", type=str, default="predictions/para-dev-output.csv")
+  parser.add_argument("--para_test_out", type=str, default="predictions/para-test-output.csv")
 
   parser.add_argument("--seed", type=int, default=11711)
   parser.add_argument("--epochs", type=int, default=10)
@@ -174,7 +210,15 @@ def get_args():
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
   parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
 
+  # Arguments for PEFT
+  parser.add_argument("--peft", choices=["none", "bottleneck", "ia3", "lora"], default="none")
+  parser.add_argument("--adapter_dim", type=int, default=64)  # bottleneck size
 
+  # (LoRA args, will be used later once your config supports HF PEFT)
+  parser.add_argument("--lora_rank", type=int, default=8)
+  parser.add_argument("--lora_dropout", type=float, default=0.05)
+  parser.add_argument("--lora_alpha", type=int, default=None)
+  parser.add_argument("--lora_targets", nargs="+", default=["query", "key", "value", "attention_dense"])
   args = parser.parse_args()
   return args
 

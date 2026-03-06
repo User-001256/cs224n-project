@@ -22,6 +22,7 @@ from einops import rearrange
 
 from datasets import SonnetsDataset
 from models.gpt2 import GPT2Model
+from models.gpt2_adapt import apply_adapter, apply_IA3, apply_lora
 
 from torch_utils import *
 from generation_utils import *
@@ -40,9 +41,10 @@ class SonnetGPT(nn.Module):
     self.temp_process = None
     self.topk_process = None
     self.topp_process = None
-    
-    for param in self.gpt.parameters():
-      param.requires_grad = True
+
+    # Freeze parameters if we are using peft, otherwise weights should be updated for full fine-tuning.
+    for p in self.gpt.parameters():
+        p.requires_grad = (args.peft == "none")
 
   def forward(self, input_ids, attention_mask):
     """
@@ -179,6 +181,28 @@ def train(args, preview_valid = True):
 
   model = SonnetGPT(args)
   model = model.to(device)
+
+  # Apply LoRA adapter
+  if args.peft == "lora":
+      # Wrap with LoRA. This returns a PEFT-wrapped model.
+      model.gpt = apply_lora(
+          model.gpt,
+          target_modules=args.lora_targets,
+          rank=args.lora_rank,
+          dropout=args.lora_dropout,
+          alpha=args.lora_alpha,
+      )
+  # Apply bottleneck adapter
+  if args.peft == "bottleneck":
+      apply_adapter(model.gpt, adapter_dim=args.adapter_dim)
+  # Apply ia3 adapter
+  if args.peft == "ia3":
+      apply_IA3(model.gpt)
+
+  # Check trainable percentage (for PEFT, should be low)
+  trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+  total = sum(p.numel() for p in model.parameters())
+  print(f"Trainable: {trainable}/{total} = {trainable / total:.4%}")
   
   # If we want to preview validation set, also need to initialize sampling hyperparameters
   if preview_valid:
@@ -189,7 +213,8 @@ def train(args, preview_valid = True):
     "lr" : args.lr,
     "weight_decay": args.weight_decay
   }
-  optimizer = set_optimizer(model.parameters(), **optim_config)
+  trainable_params = [p for p in model.parameters() if p.requires_grad]
+  optimizer = set_optimizer(trainable_params, **optim_config)
 
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
@@ -236,9 +261,24 @@ def generate_submission_sonnets(args):
   saved = torch.load(f'{args.epochs-1}_{args.filepath}', weights_only=False)
 
   model = SonnetGPT(saved['args'])
+
+  if saved["args"].peft == "lora":
+      model.gpt = apply_lora(
+          model.gpt,
+          target_modules=saved["args"].lora_targets,
+          rank=saved["args"].lora_rank,
+          dropout=saved["args"].lora_dropout,
+          alpha=saved["args"].lora_alpha,
+      )
+  elif saved["args"].peft == "bottleneck":
+      apply_adapter(model.gpt, adapter_dim=saved["args"].adapter_dim)
+  elif saved["args"].peft == "ia3":
+      apply_IA3(model.gpt)
+
   model.load_state_dict(saved['model'])
   model = model.to(device)
   model.eval()
+  model.update_logit_processors(saved["args"].temperature, saved["args"].top_k, saved["args"].top_p)
 
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
   held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
@@ -266,7 +306,7 @@ def get_args():
 
   parser.add_argument("--sonnet_path", type=str, default="../data/sonnets.txt")
   parser.add_argument("--held_out_sonnet_path", type=str, default="../data/sonnets_held_out.txt")
-  parser.add_argument("--sonnet_out", type=str, default="../predictions/generated_sonnets.txt")
+  parser.add_argument("--sonnet_out", type=str, default="predictions/generated_sonnets.txt")
 
   parser.add_argument("--seed", type=int, default=11711)
   parser.add_argument("--epochs", type=int, default=10)
@@ -284,6 +324,14 @@ def get_args():
   parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
   parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
+
+  # Arguments for PEFT
+  parser.add_argument("--peft", choices=["none", "bottleneck", "ia3", "lora"], default="none")
+  parser.add_argument("--adapter_dim", type=int, default=64)  # for bottleneck
+  parser.add_argument("--lora_rank", type=int, default=8)
+  parser.add_argument("--lora_dropout", type=float, default=0.05)
+  parser.add_argument("--lora_alpha", type=int, default=None)
+  parser.add_argument("--lora_targets", nargs="+", default=["query", "key", "value", "attention_dense"])
 
   args = parser.parse_args()
   return args

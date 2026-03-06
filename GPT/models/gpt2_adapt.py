@@ -8,6 +8,7 @@ from config import GPT2Config
 from models.gpt2 import GPT2Model
 from modules.attention import CausalSelfAttention
 from modules.gpt2_layer import GPT2Layer
+from typing import List
 
 ###########################
 #### Bottleneck Adapter ###
@@ -178,7 +179,7 @@ def apply_IA3(model: GPT2Model):
 #### LoRA Adapter ###
 #####################
 
-def apply_lora(model:GPT2Model, target_modules:list[str], 
+def apply_lora(model:GPT2Model, target_modules: List[str],
                rank = 8, dropout = 0.05, alpha = None, **lora_config_kwargs):
     """
     Apply Lora to GPT2 Model. Based on HuggingFace's PEFT library.

@@ -184,6 +184,10 @@ class PretrainedConfig(object):
 
     return config_dict, kwargs
 
+  # Get method for Hugging Face compatibility for LoRA
+  def get(self, key, default=None):
+      return getattr(self, key, default)
+
 
 class GPT2Config(PretrainedConfig):
   model_type = "gpt"
