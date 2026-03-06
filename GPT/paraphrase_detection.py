@@ -11,7 +11,8 @@ Running:
 trains and evaluates your ParaphraseGPT model and writes the required submission files.
 '''
 
-import argparse
+from program_config import PARAPHRASE_ARGS, DATA_PATHS
+from peft_config import PARAPHRASE_PEFT
 import random
 import torch
 
@@ -31,14 +32,10 @@ from torch_utils import *
 class ParaphraseGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
 
-  def __init__(self, args):
+  def __init__(self, gpt_backbone:GPT2Model):
     super().__init__()
-    self.gpt = GPT2Model.from_pretrained(args.gpt_kind)
+    self.gpt = gpt_backbone
     # self.paraphrase_detection_head = nn.Linear(args.d, 2)  # Paraphrase detection has two outputs: 1 (yes) or 0 (no).
-
-    # By default, fine-tune the full model.
-    for param in self.gpt.parameters():
-      param.requires_grad = (args.peft == "none")
 
   def forward(self, input_ids, attention_mask):
     """
@@ -78,31 +75,29 @@ def train(args):
   """Train GPT-2 for paraphrase detection on the Quora dataset."""
   device = select_device()
   
-  train_dl = get_paraphrase_dataloader(args.para_train, "train", batch_size = args.batch_size, num_workers = args.num_workers)
-  valid_dl = get_paraphrase_dataloader(args.para_dev,   "valid", batch_size = args.batch_size, num_workers = args.num_workers)
+  train_dl = get_paraphrase_dataloader(DATA_PATHS.para_train, "train", batch_size = args.batch_size, num_workers = args.num_workers)
+  valid_dl = get_paraphrase_dataloader(DATA_PATHS.para_valid, "valid", batch_size = args.batch_size, num_workers = args.num_workers)
 
-  model = ParaphraseGPT(args)
+  # Initialize model_config for checkpoint saving
+  model_config = SimpleNamespace(
+    gpt_kind = args.gpt_kind,
+    fine_tune_mode = args.fine_tune_mode,
+  )
+  if args.fine_tune_mode == "peft":
+    model_config.peft_config = PARAPHRASE_PEFT
+    
+  # Initialize GPT2 model:
+  model = GPT2Model.from_pretrained(args.gpt_kind)
   model = model.to(device)
-
-  # Apply PEFT adapters
-  if args.peft == "bottleneck":
-      apply_adapter(model.gpt, adapter_dim=args.adapter_dim)
-  elif args.peft == "ia3":
-      apply_IA3(model.gpt)
-  elif args.peft == "lora":
-      model.gpt = apply_lora(
-          model.gpt,
-          target_modules=args.lora_targets,
-          rank=args.lora_rank,
-          dropout=args.lora_dropout,
-          alpha=args.lora_alpha,
-      )
-
-  # Check trainable percentage (for PEFT, should be low)
-  trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-  total = sum(p.numel() for p in model.parameters())
-  print(f"[{args.peft}] Trainable: {trainable}/{total} = {trainable / total:.4%}")
+  # Apply PEFT:
+  if args.fine_tune_mode == "peft":
+    apply_gpt_peft(model, PARAPHRASE_PEFT)
   
+  # Adds the Paraphrase GPT Wrapper
+  model = ParaphraseGPT(model)
+  model = model.to(device)
+  summarize_peft(model)
+
   optim_config = {
     "lr" : args.lr,
     "weight_decay": args.weight_decay
@@ -140,7 +135,8 @@ def train(args):
 
     if dev_acc > best_dev_acc:
       best_dev_acc = dev_acc
-      save_model(model, optimizer, args, args.filepath)
+      save_fine_tune_checkpoint(args.filepath, model.gpt, model_config)
+      
 
     print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, dev acc :: {dev_acc :.3f}")
 
@@ -149,31 +145,36 @@ def train(args):
 def test(args):
   """Evaluate your model on the dev and test datasets; save the predictions to disk."""
   device = select_device()
-  saved = torch.load(args.filepath)
+  
+  # Load our checkpoint. Infer from the saved configs. Returns a GPT2Model
+  gpt = load_fine_tune_checkpoint(args.filepath, device, model = None)
+  model = ParaphraseGPT(gpt) # type: ignore
+  
+  # saved = torch.load(args.filepath)
 
-  model = ParaphraseGPT(saved['args'])
+  # model = ParaphraseGPT(saved['args'])
 
-  # Rebuild adapter structure to match checkpoint
-  if saved["args"].peft == "bottleneck":
-      apply_adapter(model.gpt, adapter_dim=saved["args"].adapter_dim)
-  elif saved["args"].peft == "ia3":
-      apply_IA3(model.gpt)
-  elif saved["args"].peft == "lora":
-      model.gpt = apply_lora(
-          model.gpt,
-          target_modules=saved["args"].lora_targets,
-          rank=saved["args"].lora_rank,
-          dropout=saved["args"].lora_dropout,
-          alpha=saved["args"].lora_alpha,
-      )
+  # # Rebuild adapter structure to match checkpoint
+  # if saved["args"].peft == "bottleneck":
+  #     apply_adapter(model.gpt, adapter_dim=saved["args"].adapter_dim)
+  # elif saved["args"].peft == "ia3":
+  #     apply_IA3(model.gpt)
+  # elif saved["args"].peft == "lora":
+  #     model.gpt = apply_lora(
+  #         model.gpt,
+  #         target_modules=saved["args"].lora_targets,
+  #         rank=saved["args"].lora_rank,
+  #         dropout=saved["args"].lora_dropout,
+  #         alpha=saved["args"].lora_alpha,
+  #     )
 
-  model.load_state_dict(saved['model'])
-  model = model.to(device)
-  model.eval()
-  print(f"Loaded model to test from {args.filepath}")
+  # model.load_state_dict(saved['model'])
+  # model = model.to(device)
+  # model.eval()
+  # print(f"Loaded model to test from {args.filepath}")
 
-  dev_dl =  get_paraphrase_dataloader(args.para_dev, "valid", batch_size = args.batch_size, num_workers = args.num_workers)
-  test_dl = get_paraphrase_dataloader(args.para_test, "test", batch_size = args.batch_size, num_workers = args.num_workers)
+  dev_dl =  get_paraphrase_dataloader(args.para_valid,"valid", batch_size = args.batch_size, num_workers = args.num_workers)
+  test_dl = get_paraphrase_dataloader(args.para_test,  "test", batch_size = args.batch_size, num_workers = args.num_workers)
 
   dev_para_acc, _, dev_para_y_pred, _, dev_para_sent_ids = model_eval_paraphrase(dev_dl, model, device)
   print(f"dev paraphrase acc :: {dev_para_acc :.3f}")
@@ -190,37 +191,37 @@ def test(args):
       f.write(f"{p}, {s} \n")
 
 
-def get_args():
-  parser = argparse.ArgumentParser()
+# def get_args():
+#   parser = argparse.ArgumentParser()
 
-  parser.add_argument("--para_train", type=str, default="../data/quora-train.csv")
-  parser.add_argument("--para_dev", type=str, default="../data/quora-dev.csv")
-  parser.add_argument("--para_test", type=str, default="../data/quora-test-student.csv")
-  parser.add_argument("--para_dev_out", type=str, default="predictions/para-dev-output.csv")
-  parser.add_argument("--para_test_out", type=str, default="predictions/para-test-output.csv")
+#   parser.add_argument("--para_train", type=str, default="../data/quora-train.csv")
+#   parser.add_argument("--para_dev", type=str, default="../data/quora-dev.csv")
+#   parser.add_argument("--para_test", type=str, default="../data/quora-test-student.csv")
+#   parser.add_argument("--para_dev_out", type=str, default="predictions/para-dev-output.csv")
+#   parser.add_argument("--para_test_out", type=str, default="predictions/para-test-output.csv")
 
-  parser.add_argument("--seed", type=int, default=11711)
-  parser.add_argument("--epochs", type=int, default=10)
-  parser.add_argument("--gpt_kind", type=str,
-                      help="The model size as specified on hugging face.",
-                      choices=['gpt2', 'gpt2-medium', 'gpt2-large'], default='gpt2')
+#   parser.add_argument("--seed", type=int, default=11711)
+#   parser.add_argument("--epochs", type=int, default=10)
+#   parser.add_argument("--gpt_kind", type=str,
+#                       help="The model size as specified on hugging face.",
+#                       choices=['gpt2', 'gpt2-medium', 'gpt2-large'], default='gpt2')
 
-  parser.add_argument("--batch_size", help='Batch Size. Recommend 64 for GPU.', type=int, default=8)
-  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
-  parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
-  parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
+#   parser.add_argument("--batch_size", help='Batch Size. Recommend 64 for GPU.', type=int, default=8)
+#   parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
+#   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+#   parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
 
-  # Arguments for PEFT
-  parser.add_argument("--peft", choices=["none", "bottleneck", "ia3", "lora"], default="none")
-  parser.add_argument("--adapter_dim", type=int, default=64)  # bottleneck size
+#   # Arguments for PEFT
+#   parser.add_argument("--peft", choices=["none", "bottleneck", "ia3", "lora"], default="none")
+#   parser.add_argument("--adapter_dim", type=int, default=64)  # bottleneck size
 
-  # (LoRA args, will be used later once your config supports HF PEFT)
-  parser.add_argument("--lora_rank", type=int, default=8)
-  parser.add_argument("--lora_dropout", type=float, default=0.05)
-  parser.add_argument("--lora_alpha", type=int, default=None)
-  parser.add_argument("--lora_targets", nargs="+", default=["query", "key", "value", "attention_dense"])
-  args = parser.parse_args()
-  return args
+#   # (LoRA args, will be used later once your config supports HF PEFT)
+#   parser.add_argument("--lora_rank", type=int, default=8)
+#   parser.add_argument("--lora_dropout", type=float, default=0.05)
+#   parser.add_argument("--lora_alpha", type=int, default=None)
+#   parser.add_argument("--lora_targets", nargs="+", default=["query", "key", "value", "attention_dense"])
+#   args = parser.parse_args()
+#   return args
 
 # GPT2Model.from_pretrained automatically infers hyperparameters.
 # No need of this.
@@ -244,7 +245,7 @@ def get_args():
 
 
 if __name__ == "__main__":
-  args = get_args()
+  args = PARAPHRASE_ARGS
   args.filepath = f'{args.epochs}-{args.lr}-paraphrase.pt'  # Save path.
   set_seed(args.seed)  # Fix the seed for reproducibility.
   train(args)

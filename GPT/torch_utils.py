@@ -2,6 +2,9 @@ import torch
 import numpy as np
 import random
 from torch.optim import SGD, Adam, AdamW
+from models.gpt2_adapt import *
+from models.gpt2 import GPT2Model
+from models.gpt2_classifier import GPT2Classifier, SimpleNamespace
 
 def select_device():
     device = torch.device("cpu")
@@ -41,37 +44,78 @@ def set_optimizer(model_params, optim_class = "AdamW", **optim_kwargs):
     else:
         raise RuntimeError(f"Optimizer Class {optim_class} is not recognized. Please use 'SGD', 'Adam', or 'AdamW'.")
 
-
-def save_model_checkpoint(out_path, model, config, optimizer = None, scheduler = None, args = None):
+def save_fine_tune_checkpoint(out_path:str, 
+                              model: Union[GPT2Model, GPT2Classifier],
+                              model_config:SimpleNamespace, 
+                              optimizer = None, scheduler = None):
     """
-    Saving pytorch model checkpoint
+    Saving a fine-tune model checkpoont.
 
     Args:
         out_path: Output file path
         model: Pytorch Model
-        config: PyTorch Model Configuration Datastructure
-        optimizer: Optimizer State. Defaults to None
+        model_config: Model Config. Should contain the following:
+            "gpt_kind"          : Pre-trained GPT Size
+            "fine_tune_mode"    : Full Model or PEFT Fine Tune mode
+            "peft_config"       : Config dict for PEFT (Optional)
+            "clf_config"        : Classifier Config (Optional)
+        optimizer: Optimizer State. Defaults to None.
         scheduler: Scheduler State. Defaults to None.
-        config: Model config. Defaults to None.
-        args: Model arguments. Defaults to None.
     """
-    save = {"model": model.state_dict(), "model_config": config,
-            "system_rng": random.getstate(),
-            "numpy_rng": np.random.get_state(),
-            "torch_rng": torch.random.get_rng_state()}
+    sd = model.state_dict()
+    if not (hasattr(model_config, "gpt_kind") and hasattr(model_config, "fine_tune_mode")):
+        print("Model Saving Failed. Reason: Invalid Model Config.")
+        return
+    # If not full fine tune, only save the trainable parameters.
+    if model_config.fine_tune_mode != "full-model":
+        trainable = [n for n, p in model.named_parameters() if p.requires_grad]
+        sd = {k: sd[k] for k in trainable}
+    # Optionally Save scheduler and optimizer states
+    ckpt = {"model": sd, "model_config": model_config}
     if scheduler is not None:
-        save["scheduler"] = scheduler.state_dict()
+        ckpt["scheduler"] = scheduler.state_dict()
     if optimizer is not None:
-        save["optimizer"] = optimizer.state_dict()
-    if args is not None:
-        save["args"] = args
+        ckpt["optimizer"] = optimizer.state_dict()
     
     try:
-        torch.save(save, out_path)
+        torch.save(ckpt, out_path)
     except Exception:
         print(f"Failed to save model checkpoint to {out_path}.")
     else:
         print(f"Model checkpoint saved to {out_path}.")
+
+def load_fine_tune_checkpoint(load_path, device = torch.device("cpu"), model = None, optimizer = None, scheduler = None):
+    ckpt = torch.load(load_path, weights_only=False, map_location=device)
+    model_config = ckpt["model_config"]
+    if model is None:
+        print("Model not provided. Inferring from checkpoint config.")
+        if not (hasattr(model_config, "gpt_kind") and hasattr(model_config, "fine_tune_mode")):
+            raise RuntimeError("Cannot infer model when loading checkpoint. Reason: Corrupted Config.")
+        model = GPT2Model.from_pretrained(model_config.gpt_kind)
+        # Need to initialize peft structure for all partial checkpoints
+        if model_config.fine_tune_mode == "peft":
+            if not hasattr(model_config, "peft_config"):
+                raise RuntimeError("Cannot infer PEFT structure when loading checkpoint. Reason: Corrupted Config.")
+            apply_gpt_peft(model, model_config.peft_config)
+        # If the checkpoint is for a classifier:
+        if hasattr(model_config, "clf_config"):
+            model = GPT2Classifier(model_config.clf_config, model)
+    # Now we are finally ready to load our weights into the model
+    if model_config.fine_tune_mode != "full-model":
+        missing_keys, unexpected_keys = model.load_state_dict(ckpt["model"], strict=False)
+        print(f"Successfully loaded partial PEFT checkpoint. Ignored {len(missing_keys)} frozen parameters, and skipped {len(unexpected_keys)} unrecognized parameters.")
+    else:
+        model.load_state_dict(ckpt["model"])
+        print("Successfully loaded model checkpoint.")
+        
+    # Load optimizer and scheduler states if required:
+    if optimizer is not None and "optimizer" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer"])
+    if scheduler is not None and "scheduler" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler"])
+    
+    # Return the loaded model
+    return model
         
 def load_checkpoint(load_path, device = torch.device("cpu"), model = None,
                     optimizer = None, scheduler = None):
@@ -98,3 +142,21 @@ def load_checkpoint(load_path, device = torch.device("cpu"), model = None,
     if scheduler is not None and "scheduler" in ckpt:
         scheduler.load_state_dict(ckpt["scheduler"])
     return ckpt
+
+def summarize_peft(model:nn.Module):
+    """
+    Summarizes PEFT model trainable parameters
+    """
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+    print(f"Model Class: {type(model).__name__}")
+    print(
+        f"Trainable Parameters: {trainable_params:,d} || "
+        f"Total Parameters: {all_param:,d} || "
+        f"Percent Trainable: {100 * trainable_params / all_param:.5f}%"
+        
+    )

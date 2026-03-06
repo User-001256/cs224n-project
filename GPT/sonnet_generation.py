@@ -7,8 +7,8 @@ Running:
 trains your SonnetGPT model and writes the required submission files.
 '''
 
-import argparse
-import random
+from program_config import SONNET_ARGS, DATA_PATHS
+from peft_config import SONNET_PEFT
 import torch
 
 import numpy as np
@@ -22,19 +22,16 @@ from einops import rearrange
 
 from datasets import SonnetsDataset
 from models.gpt2 import GPT2Model
-from models.gpt2_adapt import apply_adapter, apply_IA3, apply_lora
+from models.gpt2_adapt import *
 
 from torch_utils import *
 from generation_utils import *
 
 class SonnetGPT(nn.Module):
-  """Your GPT-2 Model designed for paraphrase detection."""
-
-  def __init__(self, args):
+  def __init__(self, gpt_backbone:GPT2Model, gpt_tokenizer:GPT2Tokenizer):
     super().__init__()
-    # TODO: Maybe add a PEFT for self.gpt?
-    self.gpt = GPT2Model.from_pretrained(args.gpt_kind)
-    self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    self.gpt = gpt_backbone
+    self.tokenizer = gpt_tokenizer
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
     # Define the generation logit processors
@@ -42,9 +39,9 @@ class SonnetGPT(nn.Module):
     self.topk_process = None
     self.topp_process = None
 
-    # Freeze parameters if we are using peft, otherwise weights should be updated for full fine-tuning.
-    for p in self.gpt.parameters():
-        p.requires_grad = (args.peft == "none")
+    # # Freeze parameters if we are using peft, otherwise weights should be updated for full fine-tuning.
+    # for p in self.gpt.parameters():
+    #     p.requires_grad = (args.peft == "none")
 
   def forward(self, input_ids, attention_mask):
     """
@@ -53,7 +50,7 @@ class SonnetGPT(nn.Module):
     not just the distribution over next tokens for the last token!
     """
     ### YOUR CODE HERE
-    outputs = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+    outputs = self.gpt(input_ids, attention_mask)
     hidden_states = outputs['last_hidden_state']
     logits = self.gpt.hidden_state_to_token(hidden_states)
     return logits
@@ -155,54 +152,70 @@ class SonnetGPT(nn.Module):
     return token_ids, generated_output
 
 
-def save_model(model, optimizer, args, filepath):
-  save_info = {
-    'model': model.state_dict(),
-    'optim': optimizer.state_dict(),
-    'args': args,
-    'system_rng': random.getstate(),
-    'numpy_rng': np.random.get_state(),
-    'torch_rng': torch.random.get_rng_state(),
-  }
+# def save_model(model, optimizer, args, filepath):
+#   save_info = {
+#     'model': model.state_dict(),
+#     'optim': optimizer.state_dict(),
+#     'args': args,
+#     'system_rng': random.getstate(),
+#     'numpy_rng': np.random.get_state(),
+#     'torch_rng': torch.random.get_rng_state(),
+#   }
 
-  torch.save(save_info, filepath)
-  print(f"save the model to {filepath}")
+#   torch.save(save_info, filepath)
+#   print(f"save the model to {filepath}")
 
 
 def train(args, preview_valid = True):
   device = select_device()
   # Create the data and its corresponding datasets and dataloader.
-  sonnet_dataset = SonnetsDataset(args.sonnet_path)
+  sonnet_dataset = SonnetsDataset(DATA_PATHS.sonnet_train)
   sonnet_dataloader = DataLoader(sonnet_dataset, shuffle=True, batch_size=args.batch_size,
                                  collate_fn=sonnet_dataset.collate_fn, num_workers=args.num_workers)
 
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
-  held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
+  held_out_sonnet_dataset = SonnetsDataset(DATA_PATHS.sonnet_test)
 
-  model = SonnetGPT(args)
+  # Initialize model_config for checkpoints
+  model_config = SimpleNamespace(
+    gpt_kind = args.gpt_kind,
+    fine_tune_mode = args.fine_tune_mode,
+  )
+  if args.fine_tune_mode == "peft":
+    model_config.peft_config = SONNET_PEFT
+
+  # Obtain the GPT2 Model and Tokenizers
+  model = GPT2Model.from_pretrained(args.gpt_kind)
+  tokenizer = GPT2Tokenizer.from_pretrained(args.gpt_kind)
+  # Apply peft:
+  if args.fine_tune_mode == "peft":
+    apply_gpt_peft(model, SONNET_PEFT)
+  # Apply PEFT if required
+  model = SonnetGPT(model, tokenizer)
   model = model.to(device)
+  summarize_peft(model)
+  
+  # # Apply LoRA adapter
+  # if args.peft == "lora":
+  #     # Wrap with LoRA. This returns a PEFT-wrapped model.
+  #     model.gpt = apply_lora(
+  #         model.gpt,
+  #         target_modules=args.lora_targets,
+  #         rank=args.lora_rank,
+  #         dropout=args.lora_dropout,
+  #         alpha=args.lora_alpha,
+  #     )
+  # # Apply bottleneck adapter
+  # if args.peft == "bottleneck":
+  #     apply_adapter(model.gpt, adapter_dim=args.adapter_dim)
+  # # Apply ia3 adapter
+  # if args.peft == "ia3":
+  #     apply_IA3(model.gpt)
 
-  # Apply LoRA adapter
-  if args.peft == "lora":
-      # Wrap with LoRA. This returns a PEFT-wrapped model.
-      model.gpt = apply_lora(
-          model.gpt,
-          target_modules=args.lora_targets,
-          rank=args.lora_rank,
-          dropout=args.lora_dropout,
-          alpha=args.lora_alpha,
-      )
-  # Apply bottleneck adapter
-  if args.peft == "bottleneck":
-      apply_adapter(model.gpt, adapter_dim=args.adapter_dim)
-  # Apply ia3 adapter
-  if args.peft == "ia3":
-      apply_IA3(model.gpt)
-
-  # Check trainable percentage (for PEFT, should be low)
-  trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-  total = sum(p.numel() for p in model.parameters())
-  print(f"Trainable: {trainable}/{total} = {trainable / total:.4%}")
+  # # Check trainable percentage (for PEFT, should be low)
+  # trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+  # total = sum(p.numel() for p in model.parameters())
+  # print(f"Trainable: {trainable}/{total} = {trainable / total:.4%}")
   
   # If we want to preview validation set, also need to initialize sampling hyperparameters
   if preview_valid:
@@ -252,36 +265,28 @@ def train(args, preview_valid = True):
         print(f'{batch[1]}{output[1]}\n\n')
 
     # TODO: consider a stopping condition to prevent overfitting on the small dataset of sonnets.
-    save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+    # Save model at each epoch
+    save_name = f'{epoch}_{args.filepath}'
+    save_fine_tune_checkpoint(save_name, model.gpt, model_config)
 
 
 @torch.no_grad()
 def generate_submission_sonnets(args):
   device = select_device()
-  saved = torch.load(f'{args.epochs-1}_{args.filepath}', weights_only=False)
-
-  model = SonnetGPT(saved['args'])
-
-  if saved["args"].peft == "lora":
-      model.gpt = apply_lora(
-          model.gpt,
-          target_modules=saved["args"].lora_targets,
-          rank=saved["args"].lora_rank,
-          dropout=saved["args"].lora_dropout,
-          alpha=saved["args"].lora_alpha,
-      )
-  elif saved["args"].peft == "bottleneck":
-      apply_adapter(model.gpt, adapter_dim=saved["args"].adapter_dim)
-  elif saved["args"].peft == "ia3":
-      apply_IA3(model.gpt)
-
-  model.load_state_dict(saved['model'])
+  # Most recent filepath
+  load_name = f'{args.epochs-1}_{args.filepath}'
+  gpt = load_fine_tune_checkpoint(load_name, device, model = None)
+  # Load tokenizer
+  tokenizer = GPT2Tokenizer.from_pretrained(args.gpt_kind)
+  # Instantiate Sonnet GPT:
+  model = SonnetGPT(gpt, tokenizer)
   model = model.to(device)
+
   model.eval()
-  model.update_logit_processors(saved["args"].temperature, saved["args"].top_k, saved["args"].top_p)
+  model.update_logit_processors(args.temperature, args.top_k, args.top_p)
 
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
-  held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
+  held_out_sonnet_dataset = SonnetsDataset(DATA_PATHS.sonnet_test)
 
   generated_sonnets = []
   for batch in held_out_sonnet_dataset:
@@ -301,43 +306,43 @@ def generate_submission_sonnets(args):
       f.write(sonnet[1])
 
 
-def get_args():
-  parser = argparse.ArgumentParser()
+# def get_args():
+#   parser = argparse.ArgumentParser()
 
-  parser.add_argument("--sonnet_path", type=str, default="../data/sonnets.txt")
-  parser.add_argument("--held_out_sonnet_path", type=str, default="../data/sonnets_held_out.txt")
-  parser.add_argument("--sonnet_out", type=str, default="predictions/generated_sonnets.txt")
+#   parser.add_argument("--sonnet_path", type=str, default="../data/sonnets.txt")
+#   parser.add_argument("--held_out_sonnet_path", type=str, default="../data/sonnets_held_out.txt")
+#   parser.add_argument("--sonnet_out", type=str, default="predictions/generated_sonnets.txt")
 
-  parser.add_argument("--seed", type=int, default=11711)
-  parser.add_argument("--epochs", type=int, default=10)
+#   parser.add_argument("--seed", type=int, default=11711)
+#   parser.add_argument("--epochs", type=int, default=10)
   
-  parser.add_argument("--gpt_kind", type=str, help="The model size as specified on hugging face.",
-                      choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
+#   parser.add_argument("--gpt_kind", type=str, help="The model size as specified on hugging face.",
+#                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
 
-  # Generation parameters.
-  parser.add_argument("--temperature", type=float, help="softmax temperature.", default=1.2)
-  parser.add_argument("--top_p", type=float, help="Cumulative probability distribution for nucleus sampling.",
-                      default=0.9)
-  parser.add_argument("--top_k", type=int, help="Thresholding count for TopK Sampling.", default = 50)
+#   # Generation parameters.
+#   parser.add_argument("--temperature", type=float, help="softmax temperature.", default=1.2)
+#   parser.add_argument("--top_p", type=float, help="Cumulative probability distribution for nucleus sampling.",
+#                       default=0.9)
+#   parser.add_argument("--top_k", type=int, help="Thresholding count for TopK Sampling.", default = 50)
 
-  parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
-  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
-  parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
-  parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
+#   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
+#   parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
+#   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+#   parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
 
-  # Arguments for PEFT
-  parser.add_argument("--peft", choices=["none", "bottleneck", "ia3", "lora"], default="none")
-  parser.add_argument("--adapter_dim", type=int, default=64)  # for bottleneck
-  parser.add_argument("--lora_rank", type=int, default=8)
-  parser.add_argument("--lora_dropout", type=float, default=0.05)
-  parser.add_argument("--lora_alpha", type=int, default=None)
-  parser.add_argument("--lora_targets", nargs="+", default=["query", "key", "value", "attention_dense"])
+#   # Arguments for PEFT
+#   parser.add_argument("--peft", choices=["none", "bottleneck", "ia3", "lora"], default="none")
+#   parser.add_argument("--adapter_dim", type=int, default=64)  # for bottleneck
+#   parser.add_argument("--lora_rank", type=int, default=8)
+#   parser.add_argument("--lora_dropout", type=float, default=0.05)
+#   parser.add_argument("--lora_alpha", type=int, default=None)
+#   parser.add_argument("--lora_targets", nargs="+", default=["query", "key", "value", "attention_dense"])
 
-  args = parser.parse_args()
-  return args
+#   args = parser.parse_args()
+#   return args
 
 if __name__ == "__main__":
-  args = get_args()
+  args = SONNET_ARGS
   args.filepath = f'{args.epochs}-{args.lr}-sonnet.pt'  # Save path.
   set_seed(args.seed)  # Fix the seed for reproducibility.
   train(args)

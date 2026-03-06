@@ -8,90 +8,13 @@ from config import GPT2Config
 from models.gpt2 import GPT2Model
 from modules.attention import CausalSelfAttention
 from modules.gpt2_layer import GPT2Layer
-from typing import List
+from typing import List, Union, Dict
 
-###########################
-#### Bottleneck Adapter ###
-###########################
+# Parameter Keywords
+LORA_PARAM_KWD = "lora_"
+ADAPTER_PARAM_KWD = "bottleneck_"
+IA3_PARAM_KWD = "task_vec_"
 
-class BottleneckAdapter(nn.Module):
-    """
-    An sequential bottleneck adapter class proposed by Houlsby et. al.
-    Baasically a small FFN with residual add.
-    """
-    def __init__(self, input_dim, intermediate_dim):
-        super().__init__()
-        self.bottleneck_down = nn.Linear(input_dim, intermediate_dim)
-        self.act = nn.GELU()
-        self.bottleneck_up = nn.Linear(intermediate_dim, input_dim)
-        
-    def _init_weights(self, scale, identity = True):
-        """
-        Initialize the adapter projection layers
-
-        Args:
-            scale: Std Dev of random normal weights
-            identity: If True, the adapter will be initialized to the identity function. Defaults to True.
-        """
-        self.bottleneck_down.weight.data.normal_(mean = 0.0, std = scale)
-        # If identity == True, the up projection weights will not be initialized
-        if identity:
-            self.bottleneck_up.weight.data.zero_()
-        else:
-            self.bottleneck_up.weight.data.normal_(mean = 0.0, std = scale)
-        # Initialize both bias vectors to 0
-        self.bottleneck_down.bias.data.zero_()
-        self.bottleneck_up.bias.data.zero_()
-        
-    def forward(self, x):
-        return x + self.bottleneck_up(self.act(self.bottleneck_down(x)))
-
-# Adapter Transformer Block:
-class AdapterGPT2Layer(nn.Module):
-    """
-    GPT-2 block with injected bottleneck adapters. Adapters will be placed 
-    after the multiheaded attention and FFN but before their residual adds.
-    """
-    def __init__(self, base_layer: GPT2Layer, adapter_dim: int, initializer_range = 0.02, identity_init = True):
-        super().__init__()
-        # Base gpt2layer
-        self.base_layer = base_layer
-        # Initialize the Adapter Modules
-        self.attention_adapter = BottleneckAdapter(base_layer.model_dim, adapter_dim)
-        self.ffn_adapter = BottleneckAdapter(base_layer.model_dim, adapter_dim)
-        # Initialize weights
-        self._initialize_adapter_weights(initializer_range, identity_init)
-        
-    def _initialize_adapter_weights(self, initializer_range, identity):
-        self.attention_adapter._init_weights(initializer_range, identity)
-        self.ffn_adapter._init_weights(initializer_range, identity)
-
-    def forward(self, x, attention_mask):
-        """
-        Overrides the standard GPT2 Layer forward function
-        """
-        # Adapter Layer is applied before residual add.
-        attn_out = x + self.attention_adapter(self.base_layer._attn(x, attention_mask))
-        return attn_out + self.ffn_adapter(self.base_layer._ffn(attn_out))
-    
-def apply_adapter(model: GPT2Model, adapter_dim):
-    """
-    Apply adapters to all GPT2 Blocks within our GPT2 model.
-    
-    TODO: Add compatibility to compose with IA3.
-
-    Args:
-        model: GPT2 Model
-        adapter_dim: Intermediate dimensions of bottleneck adapters
-    """
-    new_blocks = []
-    for b in model.blocks:
-        new_blocks.append(AdapterGPT2Layer(b, adapter_dim, initializer_range=model.config.initializer_range))
-    model.blocks = nn.ModuleList(new_blocks)
-    # Freeze the non-adapter parameters
-    for n, p in model.named_parameters():
-        p.requires_grad = ("bottleneck" in n)
-    
 ####################
 #### IA3 Adapter ###
 ####################
@@ -140,7 +63,7 @@ class IA3GPT2Layer(nn.Module):
         # Learable vector for FFN activation
         self.task_vec_ff = nn.Parameter(torch.ones(base_layer.ffn_act_dim))
     
-    # Subroutines of forward:
+    # Subroutines of forward: Compatible with bottleneck adapters
     def _attn(self, x, attn_mask):
         attn_in = self.base_layer.attention_layer_norm(x)
         # Attention has been swapped out wiht IA3SelfAttention
@@ -175,11 +98,99 @@ def apply_IA3(model: GPT2Model):
     for n, p in model.named_parameters():
         p.requires_grad = ("task_vec" in n)
 
+###########################
+#### Bottleneck Adapter ###
+###########################
+
+class BottleneckAdapter(nn.Module):
+    """
+    An sequential bottleneck adapter class proposed by Houlsby et. al.
+    Baasically a small FFN with residual add.
+    """
+    def __init__(self, input_dim, intermediate_dim):
+        super().__init__()
+        self.bottleneck_down = nn.Linear(input_dim, intermediate_dim)
+        self.act = nn.GELU()
+        self.bottleneck_up = nn.Linear(intermediate_dim, input_dim)
+        
+    def _init_weights(self, scale, identity = True):
+        """
+        Initialize the adapter projection layers
+
+        Args:
+            scale: Std Dev of random normal weights
+            identity: If True, the adapter will be initialized to the identity function. Defaults to True.
+        """
+        self.bottleneck_down.weight.data.normal_(mean = 0.0, std = scale)
+        # If identity == True, the up projection weights will not be initialized
+        if identity:
+            self.bottleneck_up.weight.data.zero_()
+        else:
+            self.bottleneck_up.weight.data.normal_(mean = 0.0, std = scale)
+        # Initialize both bias vectors to 0
+        self.bottleneck_down.bias.data.zero_()
+        self.bottleneck_up.bias.data.zero_()
+        
+    def forward(self, x):
+        return x + self.bottleneck_up(self.act(self.bottleneck_down(x)))
+
+# Adapter Transformer Block:
+class AdapterGPT2Layer(nn.Module):
+    """
+    GPT-2 block with injected bottleneck adapters. Adapters will be placed 
+    after the multiheaded attention and FFN but before their residual adds.
+    """
+    def __init__(self, base_layer: Union[GPT2Layer, IA3GPT2Layer], adapter_dim: int, initializer_range = 0.02, identity_init = True):
+        super().__init__()
+        # Base gpt2layer
+        self.base_layer = base_layer
+        # Query model dimension
+        if isinstance(base_layer, GPT2Layer):
+            d_model = base_layer.model_dim
+        elif isinstance(base_layer, IA3GPT2Layer):
+            d_model = base_layer.base_layer.model_dim
+        
+        # Initialize the Adapter Modules
+        self.attention_adapter = BottleneckAdapter(d_model, adapter_dim)
+        self.ffn_adapter = BottleneckAdapter(d_model, adapter_dim)
+        # Initialize weights
+        self._initialize_adapter_weights(initializer_range, identity_init)
+        
+    def _initialize_adapter_weights(self, initializer_range, identity):
+        self.attention_adapter._init_weights(initializer_range, identity)
+        self.ffn_adapter._init_weights(initializer_range, identity)
+
+    def forward(self, x, attention_mask):
+        """
+        Overrides the standard GPT2 Layer forward function
+        """
+        # Adapter Layer is applied before residual add.
+        attn_out = x + self.attention_adapter(self.base_layer._attn(x, attention_mask))
+        return attn_out + self.ffn_adapter(self.base_layer._ffn(attn_out))
+    
+def apply_adapter(model: GPT2Model, adapter_dim = 64):
+    """
+    Apply adapters to all GPT2 Blocks within our GPT2 model.
+    
+    TODO: Add compatibility to compose with IA3.
+
+    Args:
+        model: GPT2 Model
+        adapter_dim: Intermediate dimensions of bottleneck adapters
+    """
+    new_blocks = []
+    for b in model.blocks:
+        new_blocks.append(AdapterGPT2Layer(b, adapter_dim, initializer_range=model.config.initializer_range))
+    model.blocks = nn.ModuleList(new_blocks)
+    # Freeze the non-adapter parameters
+    for n, p in model.named_parameters():
+        p.requires_grad = ("bottleneck" in n)
+    
 #####################
 #### LoRA Adapter ###
 #####################
 
-def apply_lora(model:GPT2Model, target_modules: List[str],
+def apply_lora(model:GPT2Model, target_modules: List[str] = ["query", "value"],
                rank = 8, dropout = 0.05, alpha = None, **lora_config_kwargs):
     """
     Apply Lora to GPT2 Model. Based on HuggingFace's PEFT library.
@@ -203,5 +214,35 @@ def apply_lora(model:GPT2Model, target_modules: List[str],
         task_type = "CAUSAL_LM",
         **lora_config_kwargs
     )
-    return get_peft_model(model, lora_config) #type: ignore
+    get_peft_model(model, lora_config) #type: ignore
     
+#################################
+#### Master Function for PEFT ###
+#################################
+
+def apply_gpt_peft(model: GPT2Model, peft_config:Dict):
+    """
+    Apply all parameter efficient adaptation modules for our GPT2 model.
+
+    Args:
+        model: GPT2 Model
+        peft_config: A dictionary.
+            keys: "lora", "ia3", or "adapter"
+            values: A kwargs dictionary with peft hyperparameters
+    
+    Returns:
+        This function modifies the GPT2 model in-place.
+    """
+    
+    # First apply IA3
+    if 'ia3' in peft_config:
+        apply_IA3(model) # IA3 does not require hyperparameters
+    # Then apply bottleneck
+    if 'adapter' in peft_config:
+        apply_adapter(model, **peft_config["adapter"])
+    # Finally apply Lora
+    if 'lora' in peft_config:
+        apply_lora(model, **peft_config["lora"])
+    # Set base network parameters to frozen:
+    for n, p in model.named_parameters():
+        p.requires_grad = (IA3_PARAM_KWD in n) or (LORA_PARAM_KWD in n) or (ADAPTER_PARAM_KWD in n)

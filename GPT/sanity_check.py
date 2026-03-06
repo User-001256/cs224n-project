@@ -15,8 +15,15 @@ def test_gpt2(model_size='gpt2'):
   openai_model = OpenAIGPT2Model.from_pretrained(model_size)
   gpt = GPT2Model.from_pretrained(model=model_size, **model_size_to_params(model_size))
 
-  apply_IA3(gpt)
-
+  apply_gpt_peft(gpt, {
+    "ia3": None,
+    "adapter": {"adapter_dim" : 64},
+    "lora": {"target_modules" : ["query", "key", "value", "attention_dense"], "rank": 16}
+  })
+  for k, v in gpt.named_parameters():
+    if v.requires_grad:
+      print(k)
+  
   outputs = gpt(sent_ids, att_mask)
   openai_outputs = openai_model(input_ids=sent_ids, attention_mask=att_mask, output_hidden_states=True).hidden_states[-1]
 

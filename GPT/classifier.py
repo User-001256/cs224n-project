@@ -6,7 +6,9 @@ Trains and evaluates GPT2SentimentClassifier on SST and CFIMDB
 Codebase heavily modified by User001256 for clarity and additional functionality.
 '''
 
-import argparse
+from program_config import CLASSIFIER_ARGS, DATA_PATHS
+from peft_config import CLASSIFIER_PEFT
+
 from types import SimpleNamespace
 
 import torch
@@ -14,82 +16,85 @@ import torch.nn.functional as F
 from sklearn.metrics import f1_score, accuracy_score
 
 from models.gpt2 import GPT2Model
+from models.gpt2_adapt import *
+from models.gpt2_classifier import GPT2Classifier
 from tqdm import tqdm
 
 from torch_utils import *
 from datasets import get_sentiment_dataloader
-from models.gpt2_adapt import *
+
+
 
   
-def construct_prediction_head(hidden_size, num_labels, kind = "linear"):
-  """
-  Constrcts a prediction head for the GPT2SentimentClassifier
-  """
-  dim_in = hidden_size
-  dim_out = num_labels
-  # Linear Prediction Head
-  if kind == "linear":
-    return torch.nn.Linear(dim_in, dim_out)
-  if kind == "mlp":
-    return torch.nn.Sequential(
-      torch.nn.Linear(dim_in, dim_in * 3),
-      torch.nn.GELU(),
-      torch.nn.Linear(dim_in * 3, dim_out)
-    )
+# def construct_prediction_head(hidden_size, num_labels, kind = "linear"):
+#   """
+#   Constrcts a prediction head for the GPT2SentimentClassifier
+#   """
+#   dim_in = hidden_size
+#   dim_out = num_labels
+#   # Linear Prediction Head
+#   if kind == "linear":
+#     return torch.nn.Linear(dim_in, dim_out)
+#   if kind == "mlp":
+#     return torch.nn.Sequential(
+#       torch.nn.Linear(dim_in, dim_in * 3),
+#       torch.nn.GELU(),
+#       torch.nn.Linear(dim_in * 3, dim_out)
+#     )
 
-class GPT2SentimentClassifier(torch.nn.Module):
-  '''
-  This module performs sentiment classification using GPT2 in a cloze-style (fill-in-the-blank) task.
+# class GPT2SentimentClassifier(torch.nn.Module):
+#   '''
+#   This module performs sentiment classification using GPT2 in a cloze-style (fill-in-the-blank) task.
 
-  In the SST dataset, there are 5 sentiment categories (from 0 - "negative" to 4 - "positive").
-  Thus, your forward() should return one logit for each of the 5 classes.
-  '''
+#   In the SST dataset, there are 5 sentiment categories (from 0 - "negative" to 4 - "positive").
+#   Thus, your forward() should return one logit for each of the 5 classes.
+#   '''
 
-  def __init__(self, config, gpt_backbone = None, prediction_head = None):
-    """
-    GPT2 Sentiment Classifier
+#   def __init__(self, config, gpt_backbone = None, prediction_head = None):
+#     """
+#     GPT2 Sentiment Classifier
 
-    Args:
-        config: Config. Includes attributes: num_labels, fine_tune_mode, and hidden_dropout_prob
-        gpt_backbone: GPT2 Backbone. Defaults to None.
-        prediction_head: Prediction Head Module. Defaults to None.
-    """
-    super(GPT2SentimentClassifier, self).__init__()
-    self.num_labels = config.num_labels
-    self.ft_mode = config.fine_tune_mode
+#     Args:
+#         config: Config. Includes attributes: num_labels, fine_tune_mode, and hidden_dropout_prob
+#         gpt_backbone: GPT2 Backbone. Defaults to None.
+#         prediction_head: Prediction Head Module. Defaults to None.
+#     """
+#     super(GPT2SentimentClassifier, self).__init__()
+#     self.num_labels = config.num_labels
+#     self.ft_mode = config.fine_tune_mode
     
-    # Initialize GPT2 Backbone:
-    if gpt_backbone is None:
-      self.gpt = GPT2Model.from_pretrained("gpt2") # Use base model
-    else:
-      self.gpt = gpt_backbone
+#     # Initialize GPT2 Backbone:
+#     if gpt_backbone is None:
+#       self.gpt = GPT2Model.from_pretrained("gpt2") # Use base model
+#     else:
+#       self.gpt = gpt_backbone
     
-    # Set fine tune mode
-    for p in self.gpt.parameters():
-      if self.ft_mode == "full-model":
-        p.requires_grad = True
-      else: # Last Linear Layer
-        p.requires_grad = False
+#     # Set fine tune mode
+#     for p in self.gpt.parameters():
+#       if self.ft_mode == "full-model":
+#         p.requires_grad = True
+#       else: # Last Linear Layer
+#         p.requires_grad = False
     
-    # Set up prediction head
-    self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-    if prediction_head is None:
-      self.classifier = torch.nn.Linear(
-        self.gpt.config.hidden_size, self.num_labels
-      )
-    else:
-      self.classifier = prediction_head
+#     # Set up prediction head
+#     self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+#     if prediction_head is None:
+#       self.classifier = torch.nn.Linear(
+#         self.gpt.config.hidden_size, self.num_labels
+#       )
+#     else:
+#       self.classifier = prediction_head
 
-  def forward(self, input_ids, attention_mask):
-    '''Takes a batch of sentences and returns logits for sentiment classes'''
+#   def forward(self, input_ids, attention_mask):
+#     '''Takes a batch of sentences and returns logits for sentiment classes'''
 
-    ### TODO: The final GPT contextualized embedding is the hidden state of the last token.
-    ###       HINT: You should consider what is an appropriate return value given that
-    ###       the training loop currently uses F.cross_entropy as the loss function.
-    ### YOUR CODE HERE
-    output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
-    # Keys: "last_hidden_state" and "last_token"
-    return self.classifier(self.dropout(output["last_token"]))
+#     ### TODO: The final GPT contextualized embedding is the hidden state of the last token.
+#     ###       HINT: You should consider what is an appropriate return value given that
+#     ###       the training loop currently uses F.cross_entropy as the loss function.
+#     ### YOUR CODE HERE
+#     output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+#     # Keys: "last_hidden_state" and "last_token"
+#     return self.classifier(self.dropout(output["last_token"]))
 
 
 # Evaluate the model on test examples.
@@ -115,22 +120,7 @@ def model_test_eval(dataloader, model, device):
 
   return y_pred, sents, sent_ids
 
-
-def save_model(model, optimizer, args, config, filepath):
-  save_info = {
-    'model': model.state_dict(),
-    'optim': optimizer.state_dict(),
-    'args': args,
-    'model_config': config,
-    'system_rng': random.getstate(),
-    'numpy_rng': np.random.get_state(),
-    'torch_rng': torch.random.get_rng_state(),
-  }
-
-  torch.save(save_info, filepath)
-  print(f"save the model to {filepath}")
-
-def train_one_epoch(model:GPT2SentimentClassifier,
+def train_one_epoch(model:GPT2Classifier,
                     train_dataloader,
                     valid_dataloader,
                     optimizer:torch.optim.Optimizer,
@@ -250,10 +240,10 @@ def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_arg
       # Save model checkpoint if needed.
       if valid_metric and valid_acc > best_dev_acc:
         best_dev_acc = valid_acc
-        save_model_checkpoint(trainer_args.filepath, model, model_config, optimizer = optimizer, args = trainer_args)
+        save_fine_tune_checkpoint(trainer_args.filepath, model, model_config)
       elif not valid_metric: # Save checkpoint every single epochs
-        filename = trainer_args + str(epoch)
-        save_model_checkpoint(filename, model, model_config, optimizer = optimizer, args = trainer_args)
+        filename = trainer_args.filepath + str(epoch)
+        save_fine_tune_checkpoint(filename, model, model_config)
   
 def train_init(program_args):
   """
@@ -268,7 +258,7 @@ def train_init(program_args):
                                       num_workers = a.num_workers)
   valid_dl = get_sentiment_dataloader(a.dev, "valid", batch_size = a.batch_size, 
                                       num_workers = a.num_workers)
-  # Initialize the classifier config
+  # Construct the model config to be written to checkpoints
   def _get_n_embd(gpt_kind):
     if gpt_kind == "gpt2":
       return 768
@@ -278,30 +268,38 @@ def train_init(program_args):
       return 1280
     if gpt_kind == "gpt2-xl":
       return 1600
-    
-  clf_config = {
-    "hidden_dropout_prob" : a.hidden_dropout_prob,
-    "hidden_size" : _get_n_embd(a.gpt_kind),
-    "num_labels": num_labels,
-    "fine_tune_mode": a.fine_tune_mode,
-    "clf_kind": a.prediction_head,
-    "gpt_kind": a.gpt_kind
-  }
-  clf_config = SimpleNamespace(**clf_config)
-  # Initialize prediction head:
-  clf_head = construct_prediction_head(clf_config.hidden_size, 
-                                       clf_config.num_labels,
-                                       a.prediction_head)
-  # Initialize classifier and GPT backbone
+  clf_config = SimpleNamespace(
+    hidden_dropout_prob = a.hidden_dropout_prob,
+    hidden_size = _get_n_embd(a.gpt_kind),
+    num_labels = num_labels,
+    clf_kind = a.prediction_head,
+    mlp_act_dim = None # Always use default
+  )
+  model_config = SimpleNamespace(
+    gpt_kind = a.gpt_kind,
+    fine_tune_mode = a.fine_tune_mode,
+    clf_config = clf_config
+  )
+  if a.fine_tune_mode == "peft":
+    model_config.peft_config = CLASSIFIER_PEFT
+  
+  # Now initialize our model:
   gpt = GPT2Model.from_pretrained(a.gpt_kind)
-  apply_IA3(gpt)
-  clf = GPT2SentimentClassifier(clf_config, gpt, prediction_head = clf_head)
+  if a.fine_tune_mode == "peft": # PEFT Fine Tune Mode
+    apply_gpt_peft(gpt, CLASSIFIER_PEFT)
+  elif a.fine_tune_mode == "last_layer": # Only Last Layer
+    for p in gpt.parameters(): p.requires_grad = False
+  # Add prediction head
+  clf = GPT2Classifier(clf_config, gpt)
+  summarize_peft(clf)
+  
   # Initialize optimizer:
   optim_config = {
     "lr" : a.lr,
     "weight_decay": a.weight_decay
   }
-  opt = set_optimizer(clf.parameters(), **optim_config)
+  trainable = [p for p in clf.parameters() if p.requires_grad]
+  opt = set_optimizer(trainable, **optim_config)
   # Generate Return object:
   return {
     "model": clf,
@@ -309,7 +307,7 @@ def train_init(program_args):
     "train_dataloader": train_dl,
     "valid_dataloader": valid_dl,
     "trainer_args": a,
-    "model_config": clf_config,
+    "model_config": model_config,
     "train_metric": True,
     "valid_metric": True
   } # Simply unpack this return object as train_main's arguments
@@ -318,17 +316,9 @@ def train_init(program_args):
 def test(program_args):
     device = select_device()
     a = program_args
-    # Load our checkpoint
-    ckpt = torch.load(a.filepath, weights_only=False)
-    clf_config = ckpt["model_config"]
-    # Load prediction head and GPT2  model
-    clf_head = construct_prediction_head(clf_config.hidden_size, clf_config.num_labels, clf_config.clf_kind)
-    gpt = GPT2Model.from_pretrained(clf_config.gpt_kind)
-    model = GPT2SentimentClassifier(clf_config, gpt, clf_head)
-    model.load_state_dict(ckpt["model"])
+    # Load our checkpoint. Infer from the saved configs
+    model = load_fine_tune_checkpoint(a.filepath, device = device, model = None)
     model = model.to(device)
-    print(f"Model loaded successfully from {a.filepath}.")
-    
     # Obtain dataloader for dev and test sets
     dev_dl = get_sentiment_dataloader(a.dev, "valid", batch_size = a.batch_size,
                                       num_workers = a.num_workers)
@@ -354,29 +344,29 @@ def test(program_args):
       for p, s in zip(test_sent_ids, test_pred):
         f.write(f"{p}, {s} \n")
 
-def get_args():
-  parser = argparse.ArgumentParser()
-  parser.add_argument("--seed", type=int, default=11711)
-  parser.add_argument("--epochs", type=int, default=10)
-  parser.add_argument("--fine-tune-mode", type=str,
-                      help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
-                      choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
-  parser.add_argument("--gpt_kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "distilgpt2"), default="gpt2")
-  parser.add_argument("--prediction-head", type=str,
-                      help="Type of prediction head",
-                      choices = ("linear", "mlp"), default = "linar")
-  parser.add_argument("--batch_size", help='Batch Size. Recommends 64+ for GPU.', type=int, default=8)
-  parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
-  parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
-  parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
-                      default=1e-3)
-  parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
+# def get_args():
+#   parser = argparse.ArgumentParser()
+#   parser.add_argument("--seed", type=int, default=11711)
+#   parser.add_argument("--epochs", type=int, default=10)
+#   parser.add_argument("--fine-tune-mode", type=str,
+#                       help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
+#                       choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
+#   parser.add_argument("--gpt_kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "distilgpt2"), default="gpt2")
+#   parser.add_argument("--prediction-head", type=str,
+#                       help="Type of prediction head",
+#                       choices = ("linear", "mlp"), default = "linar")
+#   parser.add_argument("--batch_size", help='Batch Size. Recommends 64+ for GPU.', type=int, default=8)
+#   parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
+#   parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
+#   parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
+#                       default=1e-3)
+#   parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
 
-  args = parser.parse_args()
-  return args
+#   args = parser.parse_args()
+#   return args
 
 if __name__ == "__main__":
-  args = get_args()
+  args = CLASSIFIER_ARGS
   set_seed(args.seed)
 
   print('Training Sentiment Classifier on SST...')
@@ -391,11 +381,11 @@ if __name__ == "__main__":
     gpt_kind = args.gpt_kind,
     hidden_dropout_prob=args.hidden_dropout_prob,
     fine_tune_mode=args.fine_tune_mode,
-    train='../data/ids-sst-train.csv',
-    dev='../data/ids-sst-dev.csv',
-    test='../data/ids-sst-test-student.csv',
-    dev_out='../predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
-    test_out='../predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
+    train=DATA_PATHS.sst_train,
+    dev=DATA_PATHS.sst_valid,
+    test=DATA_PATHS.sst_test,
+    dev_out='predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
+    test_out='predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
   )
 
   train_main(**train_init(config))
@@ -415,11 +405,11 @@ if __name__ == "__main__":
     gpt_kind = args.gpt_kind,
     hidden_dropout_prob=args.hidden_dropout_prob,
     fine_tune_mode=args.fine_tune_mode,
-    train='../data/ids-cfimdb-train.csv',
-    dev='../data/ids-cfimdb-dev.csv',
-    test='../data/ids-cfimdb-test-student.csv',
-    dev_out='../predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
-    test_out='../predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
+    train=DATA_PATHS.imdb_train,
+    dev=DATA_PATHS.imdb_valid,
+    test=DATA_PATHS.imdb_test,
+    dev_out='predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
+    test_out='predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
   )
 
   train_main(**train_init(config))
