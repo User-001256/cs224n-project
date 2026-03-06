@@ -143,12 +143,12 @@ def test(args):
   print(f"dev paraphrase acc :: {dev_para_acc :.3f}")
   test_para_y_pred, test_para_sent_ids = model_test_paraphrase(test_dl, model, device)
 
-  with open(args.para_dev_out, "w+") as f:
+  with open(args.para_dev_out, "w+", encoding='utf-8') as f:
     f.write(f"id \t Predicted_Is_Paraphrase \n")
     for p, s in zip(dev_para_sent_ids, dev_para_y_pred):
       f.write(f"{p}, {s} \n")
 
-  with open(args.para_test_out, "w+") as f:
+  with open(args.para_test_out, "w+", encoding='utf-8') as f:
     f.write(f"id \t Predicted_Is_Paraphrase \n")
     for p, s in zip(test_para_sent_ids, test_para_y_pred):
       f.write(f"{p}, {s} \n")
