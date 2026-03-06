@@ -23,80 +23,6 @@ from tqdm import tqdm
 from torch_utils import *
 from datasets import get_sentiment_dataloader
 
-
-
-  
-# def construct_prediction_head(hidden_size, num_labels, kind = "linear"):
-#   """
-#   Constrcts a prediction head for the GPT2SentimentClassifier
-#   """
-#   dim_in = hidden_size
-#   dim_out = num_labels
-#   # Linear Prediction Head
-#   if kind == "linear":
-#     return torch.nn.Linear(dim_in, dim_out)
-#   if kind == "mlp":
-#     return torch.nn.Sequential(
-#       torch.nn.Linear(dim_in, dim_in * 3),
-#       torch.nn.GELU(),
-#       torch.nn.Linear(dim_in * 3, dim_out)
-#     )
-
-# class GPT2SentimentClassifier(torch.nn.Module):
-#   '''
-#   This module performs sentiment classification using GPT2 in a cloze-style (fill-in-the-blank) task.
-
-#   In the SST dataset, there are 5 sentiment categories (from 0 - "negative" to 4 - "positive").
-#   Thus, your forward() should return one logit for each of the 5 classes.
-#   '''
-
-#   def __init__(self, config, gpt_backbone = None, prediction_head = None):
-#     """
-#     GPT2 Sentiment Classifier
-
-#     Args:
-#         config: Config. Includes attributes: num_labels, fine_tune_mode, and hidden_dropout_prob
-#         gpt_backbone: GPT2 Backbone. Defaults to None.
-#         prediction_head: Prediction Head Module. Defaults to None.
-#     """
-#     super(GPT2SentimentClassifier, self).__init__()
-#     self.num_labels = config.num_labels
-#     self.ft_mode = config.fine_tune_mode
-    
-#     # Initialize GPT2 Backbone:
-#     if gpt_backbone is None:
-#       self.gpt = GPT2Model.from_pretrained("gpt2") # Use base model
-#     else:
-#       self.gpt = gpt_backbone
-    
-#     # Set fine tune mode
-#     for p in self.gpt.parameters():
-#       if self.ft_mode == "full-model":
-#         p.requires_grad = True
-#       else: # Last Linear Layer
-#         p.requires_grad = False
-    
-#     # Set up prediction head
-#     self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
-#     if prediction_head is None:
-#       self.classifier = torch.nn.Linear(
-#         self.gpt.config.hidden_size, self.num_labels
-#       )
-#     else:
-#       self.classifier = prediction_head
-
-#   def forward(self, input_ids, attention_mask):
-#     '''Takes a batch of sentences and returns logits for sentiment classes'''
-
-#     ### TODO: The final GPT contextualized embedding is the hidden state of the last token.
-#     ###       HINT: You should consider what is an appropriate return value given that
-#     ###       the training loop currently uses F.cross_entropy as the loss function.
-#     ### YOUR CODE HERE
-#     output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
-#     # Keys: "last_hidden_state" and "last_token"
-#     return self.classifier(self.dropout(output["last_token"]))
-
-
 # Evaluate the model on test examples.
 def model_test_eval(dataloader, model, device):
   model.eval()  # Switch to eval model, will turn off randomness like dropout.
@@ -343,27 +269,6 @@ def test(program_args):
       f.write(f"id \t Predicted_Sentiment \n")
       for p, s in zip(test_sent_ids, test_pred):
         f.write(f"{p}, {s} \n")
-
-# def get_args():
-#   parser = argparse.ArgumentParser()
-#   parser.add_argument("--seed", type=int, default=11711)
-#   parser.add_argument("--epochs", type=int, default=10)
-#   parser.add_argument("--fine-tune-mode", type=str,
-#                       help='last-linear-layer: the GPT parameters are frozen and the task specific head parameters are updated; full-model: GPT parameters are updated as well',
-#                       choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
-#   parser.add_argument("--gpt_kind", type = str, help = "Pretrained GPT model kind", choices = ("gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl", "distilgpt2"), default="gpt2")
-#   parser.add_argument("--prediction-head", type=str,
-#                       help="Type of prediction head",
-#                       choices = ("linear", "mlp"), default = "linar")
-#   parser.add_argument("--batch_size", help='Batch Size. Recommends 64+ for GPU.', type=int, default=8)
-#   parser.add_argument("--num_workers", help = 'For dataloader. Use 0 for CPU and 2-8 for GPU.', type = int, default = 0)
-#   parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
-#   parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
-#                       default=1e-3)
-#   parser.add_argument("--weight_decay", type = float, default = 0.0, help = "Weight Decay for Optimizer.")
-
-#   args = parser.parse_args()
-#   return args
 
 if __name__ == "__main__":
   args = CLASSIFIER_ARGS

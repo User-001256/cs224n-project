@@ -171,8 +171,6 @@ class AdapterGPT2Layer(nn.Module):
 def apply_adapter(model: GPT2Model, adapter_dim = 64):
     """
     Apply adapters to all GPT2 Blocks within our GPT2 model.
-    
-    TODO: Add compatibility to compose with IA3.
 
     Args:
         model: GPT2 Model
