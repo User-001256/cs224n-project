@@ -10,6 +10,7 @@ from program_config import CLASSIFIER_ARGS, DATA_PATHS
 from peft_config import CLASSIFIER_PEFT
 
 from types import SimpleNamespace
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -22,6 +23,8 @@ from tqdm import tqdm
 
 from torch_utils import *
 from datasets import get_sentiment_dataloader
+
+from transformers import get_cosine_schedule_with_warmup
 
 # Evaluate the model on test examples.
 def model_test_eval(dataloader, model, device):
@@ -50,6 +53,7 @@ def train_one_epoch(model:GPT2Classifier,
                     train_dataloader,
                     valid_dataloader,
                     optimizer:torch.optim.Optimizer,
+                    scheduler:Optional[torch.optim.lr_scheduler.LRScheduler] = None,
                     device = torch.device("cpu"),
                     tqdm_title = "Training Batches"):
   """
@@ -60,6 +64,7 @@ def train_one_epoch(model:GPT2Classifier,
       train_dataloader: Train Dataloader
       valid_dataloader: Valid / Dev Dataloader
       optimizer: Model Optimizer
+      scheduler: Learning Rate scheduler
       device: Torch Device. Defaults to "cpu".
       eval_train: Evaluate on Training Set? Defaults to False.
       eval_valid: Evaluate on Dev Set? Defaults to True.
@@ -80,6 +85,8 @@ def train_one_epoch(model:GPT2Classifier,
 
       loss.backward()
       optimizer.step()
+      if scheduler is not None:
+        scheduler.step()
   # Evaluate Model on both training and validaiton set
   out = dict()
   model.eval()
@@ -143,9 +150,14 @@ def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_arg
   model = model.to(device)
   best_dev_acc = 0.0
   es = EarlyStoppingScheduler()
+  # Added a learning rate scheduler
+  num_steps = len(train_dataloader) * trainer_args.num_epochs
+  warmup_steps = int(0.1 * num_steps) # According to HuggingFace's reference.
+  lr_scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, num_steps)
+  
   for epoch in range(trainer_args.epochs):
       metrics = train_one_epoch(model, train_dataloader, valid_dataloader,
-                                optimizer, device, f"Epoch {epoch}")
+                                optimizer, lr_scheduler, device, f"Epoch {epoch}")
       # Report training metrics
       print(f"Epoch {epoch}: ", end = "")
       train_loss = metrics["train_loss"]
@@ -164,7 +176,7 @@ def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_arg
         print(f"Early Stopping Activated at Epoch {epoch}. Halting Training.")
         break
       
-def train_init(program_args):
+def train_init(program_args, peft_args = None):
   """
   Initialize the trainer object.
 
@@ -199,13 +211,13 @@ def train_init(program_args):
     fine_tune_mode = a.fine_tune_mode,
     clf_config = clf_config
   )
-  if a.fine_tune_mode == "peft":
-    model_config.peft_config = CLASSIFIER_PEFT
   
   # Now initialize our model:
   gpt = GPT2Model.from_pretrained(a.gpt_kind)
   if a.fine_tune_mode == "peft": # PEFT Fine Tune Mode
-    apply_gpt_peft(gpt, CLASSIFIER_PEFT)
+    assert peft_args is not None
+    model_config.peft_config = peft_args
+    apply_gpt_peft(gpt, peft_args)
   elif a.fine_tune_mode == "last_layer": # Only Last Layer
     for p in gpt.parameters(): p.requires_grad = False
   # Add prediction head
@@ -260,7 +272,7 @@ def test(program_args):
       for p, s in zip(test_sent_ids, test_pred):
         f.write(f"{p}, {s} \n")
         
-def run_everything(args):
+def run_everything(args, peft_args = None):
   set_seed(args.seed)
 
   print('Training Sentiment Classifier on SST...')
@@ -282,7 +294,7 @@ def run_everything(args):
     test_out='predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
   )
 
-  train_main(**train_init(config))
+  train_main(**train_init(config, peft_args))
 
   print('Evaluating on SST...')
   test(config)
@@ -306,13 +318,11 @@ def run_everything(args):
     test_out='predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
   )
 
-  train_main(**train_init(config))
+  train_main(**train_init(config, peft_args))
 
   print('Evaluating on cfimdb...')
   test(config)  
         
-
-
 if __name__ == "__main__":
-  run_everything(CLASSIFIER_ARGS)
+  run_everything(CLASSIFIER_ARGS, CLASSIFIER_PEFT)
 

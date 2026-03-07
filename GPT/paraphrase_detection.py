@@ -55,7 +55,7 @@ class ParaphraseGPT(nn.Module):
     logits = self.gpt.hidden_state_to_token(last_token)
     return logits
 
-def train(args):
+def train(args, peft_args = None):
   """Train GPT-2 for paraphrase detection on the Quora dataset."""
   device = select_device()
   
@@ -67,15 +67,15 @@ def train(args):
     gpt_kind = args.gpt_kind,
     fine_tune_mode = args.fine_tune_mode,
   )
-  if args.fine_tune_mode == "peft":
-    model_config.peft_config = PARAPHRASE_PEFT
     
   # Initialize GPT2 model:
   model = GPT2Model.from_pretrained(args.gpt_kind)
   model = model.to(device)
   # Apply PEFT:
   if args.fine_tune_mode == "peft":
-    apply_gpt_peft(model, PARAPHRASE_PEFT)
+    assert peft_args is not None
+    model_config.peft_config = peft_args
+    apply_gpt_peft(model, peft_args)
   
   # Adds the Paraphrase GPT Wrapper
   model = ParaphraseGPT(model)
@@ -155,12 +155,12 @@ def test(args):
     for p, s in zip(test_para_sent_ids, test_para_y_pred):
       f.write(f"{p}, {s} \n")
 
-def run_everything(args):
+def run_everything(args, peft_args = None):
   args.filepath = f'{args.epochs}-{args.lr}-paraphrase.pt'  # Save path.
   set_seed(args.seed)  # Fix the seed for reproducibility.
-  train(args)
+  train(args, peft_args)
   test(args)
 
 if __name__ == "__main__":
-  run_everything(PARAPHRASE_ARGS)
+  run_everything(PARAPHRASE_ARGS, PARAPHRASE_PEFT)
   
