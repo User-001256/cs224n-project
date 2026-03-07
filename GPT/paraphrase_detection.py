@@ -126,6 +126,7 @@ def train(args):
     es.step(dev_loss)
     if es.stopped:
       print(f"Early Stopping Activated at Epoch {epoch}. Halting Training.")
+      break
 
 
 @torch.no_grad()

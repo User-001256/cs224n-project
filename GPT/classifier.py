@@ -162,6 +162,7 @@ def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_arg
       es.step(valid_loss)
       if es.stopped:
         print(f"Early Stopping Activated at Epoch {epoch}. Halting Training.")
+        break
       
 def train_init(program_args):
   """
