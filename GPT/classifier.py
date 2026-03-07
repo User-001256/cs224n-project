@@ -151,7 +151,7 @@ def train_main(model, optimizer, train_dataloader, valid_dataloader, trainer_arg
   best_dev_acc = 0.0
   es = EarlyStoppingScheduler()
   # Added a learning rate scheduler
-  num_steps = len(train_dataloader) * trainer_args.num_epochs
+  num_steps = len(train_dataloader) * trainer_args.epochs
   warmup_steps = int(0.1 * num_steps) # According to HuggingFace's reference.
   lr_scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, num_steps)
   
