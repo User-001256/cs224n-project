@@ -271,57 +271,60 @@ def test(program_args):
       f.write(f"id \t Predicted_Sentiment \n")
       for p, s in zip(test_sent_ids, test_pred):
         f.write(f"{p}, {s} \n")
-        
-def run_everything(args, peft_args = None):
+
+def run_everything(args, peft_args = None, tasks = {"sst", "imdb"}):
   set_seed(args.seed)
-
-  print('Training Sentiment Classifier on SST...')
-  config = SimpleNamespace(
-    filepath='sst-classifier.pt',
-    lr=args.lr,
-    weight_decay = args.weight_decay,
-    prediction_head=args.prediction_head,
-    epochs=args.epochs,
-    batch_size=args.batch_size,
-    num_workers = args.num_workers,
-    gpt_kind = args.gpt_kind,
-    hidden_dropout_prob=args.hidden_dropout_prob,
-    fine_tune_mode=args.fine_tune_mode,
-    train=DATA_PATHS.sst_train,
-    dev=DATA_PATHS.sst_valid,
-    test=DATA_PATHS.sst_test,
-    dev_out='predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
-    test_out='predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
-  )
-
-  train_main(**train_init(config, peft_args))
-
-  print('Evaluating on SST...')
-  test(config)
-
-  print('Training Sentiment Classifier on cfimdb...')
-  config = SimpleNamespace(
-    filepath='cfimdb-classifier.pt',
-    lr=args.lr,
-    weight_decay = args.weight_decay,
-    prediction_head=args.prediction_head,
-    epochs=args.epochs,
-    batch_size=args.batch_size,
-    num_workers = args.num_workers,
-    gpt_kind = args.gpt_kind,
-    hidden_dropout_prob=args.hidden_dropout_prob,
-    fine_tune_mode=args.fine_tune_mode,
-    train=DATA_PATHS.imdb_train,
-    dev=DATA_PATHS.imdb_valid,
-    test=DATA_PATHS.imdb_test,
-    dev_out='predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
-    test_out='predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
-  )
-
-  train_main(**train_init(config, peft_args))
-
-  print('Evaluating on cfimdb...')
-  test(config)  
+  if ("sst" in tasks):
+    print('Training Sentiment Classifier on SST with configuration')
+    for k, v in args.__dict__.items():
+      print(f"{k + ':':<25}  {v:<25}")
+    print("="*100)
+    config = SimpleNamespace(
+      filepath='sst-classifier.pt',
+      lr=args.lr,
+      weight_decay = args.weight_decay,
+      prediction_head=args.prediction_head,
+      epochs=args.epochs,
+      batch_size=args.batch_size,
+      num_workers = args.num_workers,
+      gpt_kind = args.gpt_kind,
+      hidden_dropout_prob=args.hidden_dropout_prob,
+      fine_tune_mode=args.fine_tune_mode,
+      train=DATA_PATHS.sst_train,
+      dev=DATA_PATHS.sst_valid,
+      test=DATA_PATHS.sst_test,
+      dev_out='predictions/' + args.fine_tune_mode + '-sst-dev-out.csv',
+      test_out='predictions/' + args.fine_tune_mode + '-sst-test-out.csv'
+    )
+    train_main(**train_init(config, peft_args))
+    print('Evaluating on SST...')
+    test(config)
+  
+  if ("imdb" in tasks):
+    print('Training Sentiment Classifier on cfimdb with configuration:')
+    for k, v in args.__dict__.items():
+      print(f"{k + ':':<25}  {v:<25}")
+    print("="*100)
+    config = SimpleNamespace(
+      filepath='cfimdb-classifier.pt',
+      lr=args.lr,
+      weight_decay = args.weight_decay,
+      prediction_head=args.prediction_head,
+      epochs=args.epochs,
+      batch_size=args.batch_size // 8,
+      num_workers = args.num_workers,
+      gpt_kind = args.gpt_kind,
+      hidden_dropout_prob=args.hidden_dropout_prob,
+      fine_tune_mode=args.fine_tune_mode,
+      train=DATA_PATHS.imdb_train,
+      dev=DATA_PATHS.imdb_valid,
+      test=DATA_PATHS.imdb_test,
+      dev_out='predictions/' + args.fine_tune_mode + '-cfimdb-dev-out.csv',
+      test_out='predictions/' + args.fine_tune_mode + '-cfimdb-test-out.csv'
+    )
+    train_main(**train_init(config, peft_args))
+    print('Evaluating on cfimdb...')
+    test(config)
         
 if __name__ == "__main__":
   run_everything(CLASSIFIER_ARGS, CLASSIFIER_PEFT)

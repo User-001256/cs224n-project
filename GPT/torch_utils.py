@@ -153,13 +153,14 @@ def summarize_peft(model:nn.Module):
         all_param += param.numel()
         if param.requires_grad:
             trainable_params += param.numel()
+    print("="*100)
     print(f"Model Class: {type(model).__name__}")
     print(
         f"Trainable Parameters: {trainable_params:,d} || "
         f"Total Parameters: {all_param:,d} || "
         f"Percent Trainable: {100 * trainable_params / all_param:.5f}%"
-        
     )
+    print("="*100)
     
 # Early Stopping Scheduler
 class EarlyStoppingScheduler(object):
