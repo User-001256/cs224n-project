@@ -76,7 +76,7 @@ def train_one_epoch(model:GPT2Classifier,
       # Typical Training Loop...
       optimizer.zero_grad()
       logits = model(b_ids, b_mask)
-      loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+      loss = F.cross_entropy(logits, b_labels.view(-1), reduction='mean')
 
       loss.backward()
       optimizer.step()
