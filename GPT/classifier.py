@@ -259,9 +259,8 @@ def test(program_args):
       f.write(f"id \t Predicted_Sentiment \n")
       for p, s in zip(test_sent_ids, test_pred):
         f.write(f"{p}, {s} \n")
-
-if __name__ == "__main__":
-  args = CLASSIFIER_ARGS
+        
+def run_everything(args):
   set_seed(args.seed)
 
   print('Training Sentiment Classifier on SST...')
@@ -310,4 +309,10 @@ if __name__ == "__main__":
   train_main(**train_init(config))
 
   print('Evaluating on cfimdb...')
-  test(config)
+  test(config)  
+        
+
+
+if __name__ == "__main__":
+  run_everything(CLASSIFIER_ARGS)
+

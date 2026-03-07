@@ -155,9 +155,12 @@ def test(args):
     for p, s in zip(test_para_sent_ids, test_para_y_pred):
       f.write(f"{p}, {s} \n")
 
-if __name__ == "__main__":
-  args = PARAPHRASE_ARGS
+def run_everything(args):
   args.filepath = f'{args.epochs}-{args.lr}-paraphrase.pt'  # Save path.
   set_seed(args.seed)  # Fix the seed for reproducibility.
   train(args)
   test(args)
+
+if __name__ == "__main__":
+  run_everything(PARAPHRASE_ARGS)
+  
