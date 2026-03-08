@@ -1,3 +1,7 @@
+'''
+Run this to create a combined dataset with the real shakespeare sonnets and the 200
+generated ones.
+'''
 import re
 
 def read_sonnets(file_path):
@@ -11,9 +15,9 @@ def write_sonnets(file_path, sonnets):
         for i, sonnet in enumerate(sonnets, start=1):
             f.write(f"{i}\n\n{sonnet}\n\n")
 
-real_sonnets = read_sonnets("data/sonnets.txt")
-synthetic_sonnets = read_sonnets("synthetic_sonnets/sonnets_clean.txt")
+real_sonnets = read_sonnets("../data/sonnets.txt")
+synthetic_sonnets = read_sonnets("../data/sonnets_clean.txt")
 
 combined_sonnets = real_sonnets * 2 + synthetic_sonnets
 
-write_sonnets("combined_sonnets_train.txt", combined_sonnets)
+write_sonnets("../data/combined_sonnets_train.txt", combined_sonnets)
