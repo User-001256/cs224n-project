@@ -37,15 +37,17 @@ class IA3SelfAttention(nn.Module):
         self.task_vec_k = nn.Parameter(L_k) # Shape (D,)
         self.task_vec_v = nn.Parameter(L_v) # Shape (D,)
         # Add an optional bias to the IA3 task vector if applicable
-        B_k, B_v = torch.zeros(base_attention.all_head_size), torch.zeros(base_attention.all_head_size)
-        self.task_vec_bias_k = nn.Parameter(B_k) if bias else B_k
-        self.task_vec_bias_v = nn.Parameter(B_v) if bias else B_v
+        self.task_vec_bias_k = nn.Parameter(torch.zeros(base_attention.all_head_size)) if bias else None
+        self.task_vec_bias_v = nn.Parameter(torch.zeros(base_attention.all_head_size)) if bias else None
     
     def forward(self, x, attention_mask):
         # Apply Projection First, Shape: (b, t, D)
         K, Q, V = self.attn._forward_first(x)
-        # Apply element wise multiplication
-        K, V = K * self.task_vec_k + self.task_vec_bias_k, V * self.task_vec_v + self.task_vec_bias_v
+        # Apply element wise multiplication (addition as well if bias is present.)
+        if self.task_vec_bias_k is not None and self.task_vec_bias_v is not None:
+            K, V = K * self.task_vec_k + self.task_vec_bias_k, V * self.task_vec_v + self.task_vec_bias_v
+        else:
+            K, V = K * self.task_vec_k, V * self.task_vec_v
         # Complete the rest of the attention routime:
         return self.attn._forward_rest(K, Q, V, attention_mask)
         
@@ -67,8 +69,7 @@ class IA3GPT2Layer(nn.Module):
         # Learable vector for FFN activation
         self.task_vec_ff = nn.Parameter(torch.ones(base_layer.ffn_act_dim))
         # Optional bias for the ffn task vector
-        B_ff = torch.zeros(base_layer.ffn_act_dim)
-        self.task_vec_bias_ff = nn.Parameter(B_ff) if bias else B_ff
+        self.task_vec_bias_ff = nn.Parameter(torch.zeros(base_layer.ffn_act_dim)) if bias else None
     
     # Subroutines of forward: Compatible with bottleneck adapters
     def _attn(self, x, attn_mask):
@@ -81,7 +82,10 @@ class IA3GPT2Layer(nn.Module):
         ffn_in = self.base_layer.ffn_layer_norm(x)
         ffn_act = self.base_layer.ffn_act_fn(self.base_layer.ffn_in_dense(ffn_in))
         # Apply multiplication to activations
-        ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act + self.task_vec_bias_ff)
+        if self.task_vec_bias_ff is not None:
+            ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act + self.task_vec_bias_ff)
+        else:
+            ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act)
         return self.base_layer.ffn_dropout(ffn_out)
 
     def forward(self, x, attention_mask):
