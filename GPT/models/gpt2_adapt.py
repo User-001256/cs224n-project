@@ -246,14 +246,14 @@ def apply_gpt_peft(model: GPT2Model, peft_config:Dict):
         This function modifies the GPT2 model in-place.
     """
     
-    # First apply IA3
-    if 'ia3' in peft_config:
+    # First apply IA3 (only if config value is a dict, not None)
+    if peft_config.get("ia3") is not None:
         apply_IA3(model, **peft_config["ia3"])
     # Then apply bottleneck
-    if 'adapter' in peft_config:
+    if peft_config.get("adapter") is not None:
         apply_adapter(model, **peft_config["adapter"])
     # Finally apply Lora
-    if 'lora' in peft_config:
+    if peft_config.get("lora") is not None:
         apply_lora(model, **peft_config["lora"])
     # Set base network parameters to frozen:
     for n, p in model.named_parameters():
