@@ -8,6 +8,7 @@ trains your SonnetGPT model and writes the required submission files.
 '''
 
 from program_config import SONNET_ARGS, DATA_PATHS
+from sonnet_testing import compute_chrf_score
 from peft_config import SONNET_PEFT
 import torch
 
@@ -129,7 +130,8 @@ def train(args):
                                  collate_fn=sonnet_dataset.collate_fn, num_workers=args.num_workers)
 
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
-  held_out_sonnet_dataset = SonnetsDataset(DATA_PATHS.sonnet_test)
+  held_out_path = DATA_PATHS.sonnet_dev if getattr(args, "use_sonnet_dev", False) else DATA_PATHS.sonnet_test
+  held_out_sonnet_dataset = SonnetsDataset(held_out_path)
 
   # Initialize model_config for checkpoints
   model_config = SimpleNamespace(
@@ -218,7 +220,8 @@ def generate_submission_sonnets(args):
   model.update_logit_processors(args.temperature, args.top_k, args.top_p)
 
   # Create the held-out dataset: these only have the first 3 lines. Your job is to fill in the rest!
-  held_out_sonnet_dataset = SonnetsDataset(DATA_PATHS.sonnet_test)
+  held_out_path = DATA_PATHS.sonnet_dev if getattr(args, "use_sonnet_dev", False) else DATA_PATHS.sonnet_test
+  held_out_sonnet_dataset = SonnetsDataset(held_out_path)
 
   generated_sonnets = []
   for batch in held_out_sonnet_dataset:
@@ -243,3 +246,5 @@ if __name__ == "__main__":
   set_seed(args.seed)  # Fix the seed for reproducibility.
   train(args)
   generate_submission_sonnets(args)
+  score = compute_chrf_score(args.sonnet_out, DATA_PATHS.sonnet_dev)
+  print(f"Score: {score:.4f}")
