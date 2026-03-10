@@ -60,5 +60,6 @@ SONNET_ARGS = SimpleNamespace(
     top_p = 0.9,                            # Top P Sampling
     temperature = 1.2,                      # Temperature Sampling
     top_k = 50,                             # Top K Sampling
-    preview_valid = False                   # Preview Validation Sets
+    preview_valid = False,                   # Preview Validation Sets
+    sonnet_out = "./predictions/generated_sonnets_dev.txt"                   # Sonnet output path
 )

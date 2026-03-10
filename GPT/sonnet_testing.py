@@ -116,28 +116,42 @@ def extract_predicted_full_sonnets(dev_order, pred_blocks):
     return preds, missing
 
 
-def compute_chrf_score(preds, refs):
+def compute_chrf_score(pred_file, dev_file):
+    """
+    Compute CHRF score for a generated sonnet file.
+
+    Args:
+        pred_file: Path (or str) to the model's generated sonnets file.
+        dev_file: Path (or str) to the dev file with partial sonnets
+                  (used to determine ordering and to locate the TRUE_ file).
+    """
+    pred_path = Path(pred_file)
+    dev_path = Path(dev_file)
+
+    # Derive the corresponding TRUE_ file from the dev file name
+    true_path = dev_path.with_name("TRUE_" + dev_path.name)
+
+    dev_order = load_dev_order(dev_path)
+    true_sonnets = load_true_sonnets(true_path)
+    gold_full_sonnets = build_full_gold_sonnets(dev_order, true_sonnets)
+
+    pred_blocks = parse_generated_file(pred_path)
+    preds_full, missing = extract_predicted_full_sonnets(dev_order, pred_blocks)
+
+    if missing:
+        print(f"Warning: missing predictions for indices: {missing}")
+
     metric = CHRF(
         word_order=0,
         lowercase=False,
         whitespace=False,
         eps_smoothing=False,
     )
-    return metric.corpus_score(preds, [refs]).score
+    return metric.corpus_score(preds_full, [gold_full_sonnets]).score
 
 
 def main():
-    dev_order = load_dev_order(DEV_FILE)
-    true_sonnets = load_true_sonnets(TRUE_FILE)
-    gold_full_sonnets = build_full_gold_sonnets(dev_order, true_sonnets)
-
-    pred_blocks = parse_generated_file(PRED_FILE)
-    preds_full, missing = extract_predicted_full_sonnets(dev_order, pred_blocks)
-
-    if missing:
-        print(f"Warning: missing predictions for indices: {missing}")
-
-    score = compute_chrf_score(preds_full, gold_full_sonnets)
+    score = compute_chrf_score(PRED_FILE, DEV_FILE)
     print(f"Score: {score:.4f}")
 
 
