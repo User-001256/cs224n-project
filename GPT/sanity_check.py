@@ -16,9 +16,8 @@ def test_gpt2(model_size='gpt2'):
   gpt = GPT2Model.from_pretrained(model=model_size, **model_size_to_params(model_size))
 
   apply_gpt_peft(gpt, {
-    "ia3": None,
-    "adapter": {"adapter_dim" : 64},
-    "lora": {"target_modules" : ["query", "key", "value", "attention_dense"], "rank": 16}
+    "ia3": {"bias": True},
+    "adapter": {"adapter_dim":64, "target_modules": ["ffn"]}
   })
   for k, v in gpt.named_parameters():
     if v.requires_grad:

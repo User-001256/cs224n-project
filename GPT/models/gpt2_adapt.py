@@ -28,7 +28,7 @@ class IA3SelfAttention(nn.Module):
     Injects 2 vectors of dimension d_model, which is elementwise multiplied
     to the key and value vectors.
     """
-    def __init__(self, base_attention: CausalSelfAttention):
+    def __init__(self, base_attention: CausalSelfAttention, bias = False):
         super().__init__()
         self.attn = base_attention
         # Additionally add the learnable vectors:
@@ -36,12 +36,18 @@ class IA3SelfAttention(nn.Module):
         L_v = torch.ones(base_attention.all_head_size)
         self.task_vec_k = nn.Parameter(L_k) # Shape (D,)
         self.task_vec_v = nn.Parameter(L_v) # Shape (D,)
+        # Add an optional bias to the IA3 task vector if applicable
+        self.task_vec_bias_k = nn.Parameter(torch.zeros(base_attention.all_head_size)) if bias else None
+        self.task_vec_bias_v = nn.Parameter(torch.zeros(base_attention.all_head_size)) if bias else None
     
     def forward(self, x, attention_mask):
         # Apply Projection First, Shape: (b, t, D)
         K, Q, V = self.attn._forward_first(x)
-        # Apply element wise multiplication
-        K, V = K * self.task_vec_k, V * self.task_vec_v
+        # Apply element wise multiplication (addition as well if bias is present.)
+        if self.task_vec_bias_k is not None and self.task_vec_bias_v is not None:
+            K, V = K * self.task_vec_k + self.task_vec_bias_k, V * self.task_vec_v + self.task_vec_bias_v
+        else:
+            K, V = K * self.task_vec_k, V * self.task_vec_v
         # Complete the rest of the attention routime:
         return self.attn._forward_rest(K, Q, V, attention_mask)
         
@@ -54,14 +60,16 @@ class IA3GPT2Layer(nn.Module):
     learnable vector of dimension 4 * d_model is injected at the intermediate
     activations of the FFN module. Elementwise mult is applied after activation.
     """
-    def __init__(self, base_layer:GPT2Layer):
+    def __init__(self, base_layer:GPT2Layer, bias = False):
         super().__init__()
         # Compose on the original base GPT2Layer
         self.base_layer = base_layer
         # New IA3 Attention Module
-        self.self_attention = IA3SelfAttention(base_layer.self_attention)
+        self.self_attention = IA3SelfAttention(base_layer.self_attention, bias)
         # Learable vector for FFN activation
         self.task_vec_ff = nn.Parameter(torch.ones(base_layer.ffn_act_dim))
+        # Optional bias for the ffn task vector
+        self.task_vec_bias_ff = nn.Parameter(torch.zeros(base_layer.ffn_act_dim)) if bias else None
     
     # Subroutines of forward: Compatible with bottleneck adapters
     def _attn(self, x, attn_mask):
@@ -74,7 +82,10 @@ class IA3GPT2Layer(nn.Module):
         ffn_in = self.base_layer.ffn_layer_norm(x)
         ffn_act = self.base_layer.ffn_act_fn(self.base_layer.ffn_in_dense(ffn_in))
         # Apply multiplication to activations
-        ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act)
+        if self.task_vec_bias_ff is not None:
+            ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act + self.task_vec_bias_ff)
+        else:
+            ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act)
         return self.base_layer.ffn_dropout(ffn_out)
 
     def forward(self, x, attention_mask):
@@ -84,15 +95,13 @@ class IA3GPT2Layer(nn.Module):
         attn_out = x + self._attn(x, attention_mask)
         return attn_out + self._ffn(attn_out)
 
-def apply_IA3(model: GPT2Model):
+def apply_IA3(model: GPT2Model, **IA3_kwargs):
     """
     Apply IA3 adapter to all GPT-2 blocks in our GPT2 Model.
-    
-    TODO: Add compatibility to compose with Bottleneck Adapters.
     """
     new_blocks = []
     for b in model.blocks:
-        new_blocks.append(IA3GPT2Layer(b))
+        new_blocks.append(IA3GPT2Layer(b, **IA3_kwargs))
     model.blocks = nn.ModuleList(new_blocks)
     # Freeze the non-adapter parameters
     for n, p in model.named_parameters():
@@ -159,11 +168,10 @@ class AdapterGPT2Layer(nn.Module):
         self._initialize_adapter_weights(initializer_range, identity_init)
         
     def _initialize_adapter_weights(self, initializer_range, identity):
-        try:
+        if isinstance(self.attention_adapter, BottleneckAdapter):
             self.attention_adapter._init_weights(initializer_range, identity)
+        if isinstance(self.ffn_adapter, BottleneckAdapter):
             self.ffn_adapter._init_weights(initializer_range, identity)
-        except AttributeError:
-            pass
 
     def forward(self, x, attention_mask):
         """
@@ -173,7 +181,7 @@ class AdapterGPT2Layer(nn.Module):
         attn_out = x + self.attention_adapter(self.base_layer._attn(x, attention_mask))
         return attn_out + self.ffn_adapter(self.base_layer._ffn(attn_out))
     
-def apply_adapter(model: GPT2Model, adapter_dim = 64, target_modules = ["attn", "ffn"]):
+def apply_adapter(model: GPT2Model, **Adapter_kwargs):
     """
     Apply adapters to all GPT2 Blocks within our GPT2 model.
 
@@ -184,7 +192,7 @@ def apply_adapter(model: GPT2Model, adapter_dim = 64, target_modules = ["attn", 
     """
     new_blocks = []
     for b in model.blocks:
-        new_blocks.append(AdapterGPT2Layer(b, adapter_dim, target_modules, initializer_range=model.config.initializer_range))
+        new_blocks.append(AdapterGPT2Layer(b, **Adapter_kwargs ,initializer_range=model.config.initializer_range))
     model.blocks = nn.ModuleList(new_blocks)
     # Freeze the non-adapter parameters
     for n, p in model.named_parameters():
@@ -238,14 +246,14 @@ def apply_gpt_peft(model: GPT2Model, peft_config:Dict):
         This function modifies the GPT2 model in-place.
     """
     
-    # First apply IA3
-    if 'ia3' in peft_config:
-        apply_IA3(model) # IA3 does not require hyperparameters
+    # First apply IA3 (only if config value is a dict, not None)
+    if peft_config.get("ia3") is not None:
+        apply_IA3(model, **peft_config["ia3"])
     # Then apply bottleneck
-    if 'adapter' in peft_config:
+    if peft_config.get("adapter") is not None:
         apply_adapter(model, **peft_config["adapter"])
     # Finally apply Lora
-    if 'lora' in peft_config:
+    if peft_config.get("lora") is not None:
         apply_lora(model, **peft_config["lora"])
     # Set base network parameters to frozen:
     for n, p in model.named_parameters():
