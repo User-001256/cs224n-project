@@ -3,8 +3,6 @@ This script contains all adapter classes for our GPT2 model
 """
 import torch
 from torch import nn
-from peft import LoraConfig, get_peft_model
-from config import GPT2Config
 from models.gpt2 import GPT2Model
 from modules.attention import CausalSelfAttention, MASK_VALUE
 from modules.gpt2_layer import GPT2Layer

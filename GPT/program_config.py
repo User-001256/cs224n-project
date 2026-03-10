@@ -18,17 +18,18 @@ DATA_PATHS = SimpleNamespace(
     para_test = DATA_FOLDER + "quora-test-student.csv",
     
     sonnet_train = DATA_FOLDER + "sonnets.txt",
-    sonnet_test = DATA_FOLDER + "sonnets_held_out.txt"
+    sonnet_test = DATA_FOLDER + "sonnets_held_out.txt",
+    sonnet_dev = DATA_FOLDER + "sonnets_held_out_dev.txt"
 )
 
 CLASSIFIER_ARGS = SimpleNamespace(
     seed = 42,                              # Reproduceability Random Seed
     lr = 1e-5,                              # learning rate
     weight_decay = 5e-2,                    # Weight Decay Regularization
-    epochs = 1,                            # Training Epochs
+    epochs = 1,                             # Training Epochs
     batch_size = 64,                        # Training Batch Size
     num_workers = 0,                        # Dataloader parallelism
-    gpt_kind = "gpt2",               # Pre-trained Model Kind
+    gpt_kind = "gpt2",                      # Pre-trained Model Kind
     
     prediction_head = "linear",             # Prediction Head Construction
     fine_tune_mode = "peft",                # Fine-tune Mode: Use full-model, peft, or last-layer
@@ -39,23 +40,23 @@ PARAPHRASE_ARGS = SimpleNamespace(
     seed = 42,                              # Reproduceability Random Seed
     lr = 1e-5,                              # learning rate
     weight_decay = 5e-2,                    # Weight Decay Regularization
-    epochs = 1,                            # Training Epochs
-    batch_size = 8,                        # Training Batch Size
+    epochs = 1,                             # Training Epochs
+    batch_size = 8,                         # Training Batch Size
     num_workers = 0,                        # Dataloader parallelism
-    gpt_kind = "gpt2",               # Pre-trained Model Kind
+    gpt_kind = "gpt2",                      # Pre-trained Model Kind
     fine_tune_mode = "peft",                # Fine-tune Mode: Use full-model or peft
 )
 
 SONNET_ARGS = SimpleNamespace(
-    seed = 42,                              # Reproduceability Random Seed
+    seed = 42,                              # Reproducibility Random Seed
     lr = 1e-5,                              # learning rate
     weight_decay = 5e-2,                    # Weight Decay Regularization
-    epochs = 1,                            # Training Epochs
-    batch_size = 8,                        # Training Batch Size
+    epochs = 1,                             # Training Epochs
+    batch_size = 8,                         # Training Batch Size
     num_workers = 4,                        # Dataloader parallelism
     gpt_kind = "gpt2-medium",               # Pre-trained Model Kind
     fine_tune_mode = "peft",                # Fine-tune Mode: Use full-model or peft
-
+    use_sonnet_dev = True,                  # If True, use sonnet_dev instead of sonnet_test for generation
     top_p = 0.9,                            # Top P Sampling
     temperature = 1.2,                      # Temperature Sampling
     top_k = 50,                             # Top K Sampling
