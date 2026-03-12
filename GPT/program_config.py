@@ -17,7 +17,7 @@ DATA_PATHS = SimpleNamespace(
     para_valid = DATA_FOLDER + "quora-dev.csv",
     para_test = DATA_FOLDER + "quora-test-student.csv",
     
-    sonnet_train = DATA_FOLDER + "sonnets.txt",
+    sonnet_train = DATA_FOLDER + "sonnets_sft_train_split.txt",
     sonnet_test = DATA_FOLDER + "sonnets_held_out.txt",
     sonnet_dev = DATA_FOLDER + "sonnets_held_out_dev.txt"
 )
