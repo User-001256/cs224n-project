@@ -19,4 +19,9 @@ SONNET_PEFT = {
     "ia3" : None,
     "adapter" : {"adapter_dim" : 64},
     "lora": {"target_modules": ["query", "value"], "rank": 8, "dropout": 0.05, "alpha": 32},
+    "prefix": {
+            "num_prefixes": 10,
+            "bottleneck_dim": 64,
+            "intermediate_dim": 512,
+        },
 }

@@ -71,7 +71,7 @@ class SonnetGPT(nn.Module):
     if p is not None:
       self.topp_process = TopPFilter(p)
     
-  @torch.no_grad
+  @torch.no_grad()
   def logit_process(self, logits:torch.Tensor):
     """
     Process the input logits with the model's logit processors
@@ -93,7 +93,7 @@ class SonnetGPT(nn.Module):
       x = self.topp_process(x)
     return x
 
-  @torch.no_grad
+  @torch.no_grad()
   def generate(self, encoding, max_length=128, **kwargs):
     token_ids = encoding.to(self.device)
     attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.device)

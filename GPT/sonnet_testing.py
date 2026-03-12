@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent
 PRED_FILE = BASE_DIR / "predictions" / "generated_sonnets_dev.txt"
 DEV_FILE = BASE_DIR.parent / "data" / "sonnets_held_out_dev.txt"
 TRUE_FILE = BASE_DIR.parent / "data" / "TRUE_sonnets_held_out_dev.txt"
+FINALIZE_MODE = "strip"
 
 
 def normalize_newlines(text: str) -> str:
@@ -71,7 +72,7 @@ def build_full_gold_sonnets(dev_order, true_sonnets):
                 f"Sonnet {sonnet_num} in true file has {len(lines)} lines, expected at least 14."
             )
 
-        gold.append("\n".join(lines[:14]))
+        gold.append(finalize_sonnet_text("\n".join(lines[:14]), FINALIZE_MODE))
 
     return gold
 
@@ -111,7 +112,7 @@ def extract_predicted_full_sonnets(dev_order, pred_blocks):
             continue
 
         lines = pred_blocks[i][:14]
-        preds.append("\n".join(lines))
+        preds.append(finalize_sonnet_text("\n".join(lines), FINALIZE_MODE))
 
     return preds, missing
 
@@ -149,6 +150,16 @@ def compute_chrf_score(pred_file, dev_file):
     )
     return metric.corpus_score(preds_full, [gold_full_sonnets]).score
 
+def finalize_sonnet_text(text: str, mode: str) -> str:
+    if mode == "none":
+        return text
+    if mode == "strip":
+        return text.strip()
+    if mode == "collapse_spaces":
+        return re.sub(r"[ \t]+", " ", text).strip()
+    if mode == "strip_each_line":
+        return "\n".join(line.strip() for line in text.split("\n")).strip()
+    raise ValueError(f"Unknown finalize mode: {mode}")
 
 def main():
     score = compute_chrf_score(PRED_FILE, DEV_FILE)

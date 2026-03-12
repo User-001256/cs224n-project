@@ -59,7 +59,7 @@ class PrefixSelfAttention(nn.Module):
     Prefix Tuning Modified Self Attention Module Proposed by Xiang Li and Percy Liang.
     https://arxiv.org/abs/2101.00190
     """
-    def __init__(self, base_attention:CausalSelfAttention, num_prefixes = 10, 
+    def __init__(self, base_attention:CausalSelfAttention, num_prefixes = 10,
                  bottleneck_dim = 64, intermediate_dim = 512):
         super().__init__()
         # Inherit and instantiate all attributes from the base attention module
@@ -72,24 +72,32 @@ class PrefixSelfAttention(nn.Module):
         self.dropout = base_attention.dropout
         self.softmax = base_attention.softmax
         self.causal_mask = base_attention.causal_mask
-        # Also inheritate the same methods
+        # Also inherit the same methods
         self._split_heads = base_attention._split_heads
         self._merge_heads = base_attention._merge_heads
         self._forward_first = base_attention._forward_first
         # Need to override the forward rest method
-        
-        # We do not mask the prefix tokens.
+
+        # Prefix tokens are always visible to all real tokens
         self.register_buffer(
             "pre_mask",
-            torch.ones((self.causal_mask.shape[-1], num_prefixes), dtype = torch.bool).view(1, 1, self.causal_mask.shape[-1], num_prefixes),
+            torch.ones(
+                (self.causal_mask.shape[-1], num_prefixes), dtype=torch.bool
+            ).view(1, 1, self.causal_mask.shape[-1], num_prefixes),
             persistent=False
         )
-        # Concatenate both masks together.
-        self.all_mask = torch.cat([self.pre_mask, self.causal_mask], dim = -1)
-        # We also do not want to treat the prefix tokens as dummy tokens.
+
+        # Concatenate prefix-visible mask with the causal mask
+        self.register_buffer(
+            "all_mask",
+            torch.cat([self.pre_mask, self.causal_mask], dim=-1),
+            persistent=False
+        )
+
+        # Prefix positions should not be treated as padded / masked out
         self.register_buffer(
             "pre_attention_mask",
-            torch.zeros(num_prefixes),
+            torch.zeros((1, 1, 1, num_prefixes), dtype=torch.float32),
             persistent=False
         )
 
@@ -99,12 +107,12 @@ class PrefixSelfAttention(nn.Module):
         # Initialize the learnable MLP Projection Networks
         self.prefix_projection_k = PrefixMLP(bottleneck_dim, intermediate_dim, self.all_head_size)
         self.prefix_projection_v = PrefixMLP(bottleneck_dim, intermediate_dim, self.all_head_size)
-    
+
     def _get_prefixes(self):
         prefix_k = self.prefix_projection_k(self.prefix_vec_k)
         prefix_v = self.prefix_projection_v(self.prefix_vec_v)
         return prefix_k, prefix_v
-    
+
     def _forward_rest(self, K, Q, V, attention_mask):
         """
         Overrides the default _forward_rest for Causal Self Attention.
@@ -120,27 +128,27 @@ class PrefixSelfAttention(nn.Module):
         prefix_v = prefix_v.expand(batch, -1, -1)
         # Use split_heads to get the prefixes to the right shape (b, h, p, d)
         prefix_k, prefix_v = self._split_heads(prefix_k), self._split_heads(prefix_v)
-        
+
         # Concatenate the prefix onto the K and V tensors
         Kp = torch.cat([prefix_k, K], dim = -2) # Shape (b, h, p + t, d)
         Vp = torch.cat([prefix_v, V], dim = -2) # Shape (b, h, p + t, d)
-        
+
         # Now carry on with our attention routine:
         # Apply scaled dot-product. Result shape: (b, h, t, t + p)
         attn_weights = torch.matmul(Q, rearrange(Kp, "b h t d -> b h d t")) / (self.attention_head_size ** 0.5)
         # Only mask the correct things
-        mask = self.all_mask[..., :attn_weights.shape[-2], :attn_weights.shape[-1]] # Shape (..., t, t+p)
+        mask = self.all_mask[..., :attn_weights.shape[-2], :attn_weights.shape[-1]].to(attn_weights.device) # Shape (..., t, t+p)
         attn_weights = torch.masked_fill(attn_weights, mask == 0, MASK_VALUE)
         # Add attention mask. More manual broadcasting...
-        prefix_mask = self.pre_attention_mask.expand((batch, 1, 1, -1))
+        prefix_mask = self.pre_attention_mask.expand(batch, 1, 1, -1).to(attn_weights.device)
         attn_weights = attn_weights + torch.cat([prefix_mask, attention_mask], dim = -1)
-        
+
         # Apply softmax (row wise), then apply dropout on normalised attn scores
-        attn_probs = self.dropout(self.softmax(attn_weights))    
+        attn_probs = self.dropout(self.softmax(attn_weights))
         # Apply value projection and merge heads. Shape: (b, t, D)
         res = self._merge_heads(torch.matmul(attn_probs, Vp))
-        return res 
-    
+        return res
+
     def forward(self, x, attention_mask):
         K, Q, V = self._forward_first(x) # Shape: (b, t, D)
         return self._forward_rest(K, Q, V, attention_mask)
@@ -189,8 +197,8 @@ class IA3GPT2Layer(nn.Module):
         self.base_layer = base_layer
         self.model_dim = base_layer.model_dim
         # New IA3 Attention Module
-        self.self_attention = IA3SelfAttention(base_layer.self_attention, bias)
-        # Learable vector for FFN activation
+        self.self_attention = IA3SelfAttention(base_layer.self_attention)
+        # Learnable vector for FFN activation
         self.task_vec_ff = nn.Parameter(torch.ones(base_layer.ffn_act_dim))
         # Optional bias for the ffn task vector
         self.task_vec_bias_ff = nn.Parameter(torch.zeros(base_layer.ffn_act_dim)) if bias else None
@@ -412,16 +420,16 @@ def apply_gpt_peft(model: GPT2Model, peft_config:Dict):
         This function modifies the GPT2 model in-place.
     """
     # First Apply Prefix Tuning
-    if "prefix" in peft_config:
+    if "prefix" in peft_config and peft_config["prefix"] is not None:
         apply_prefix_tuning(model, **peft_config["prefix"])
     # Apply IA3
-    if 'ia3' in peft_config:
+    if 'ia3' in peft_config and peft_config["ia3"] is not None:
         apply_IA3(model, **peft_config["ia3"])
     # Apply LoRA
-    if 'lora' in peft_config:
+    if 'lora' in peft_config and peft_config["lora"] is not None:
         apply_lora(model, **peft_config["lora"])
     # Finally Apply Adapter
-    if 'adapter' in peft_config:
+    if 'adapter' in peft_config and peft_config["adapter"] is not None:
         apply_adapter(model, **peft_config["adapter"])
     
     # Set base network parameters to frozen:
