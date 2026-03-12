@@ -28,6 +28,8 @@ from models.gpt2 import GPT2Model
 from models.gpt2_adapt import apply_adapter, apply_IA3, apply_lora
 
 from torch_utils import *
+from typing import Optional
+from transformers import get_cosine_schedule_with_warmup
 
 class ParaphraseGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
@@ -54,6 +56,43 @@ class ParaphraseGPT(nn.Module):
     last_token = outputs['last_token']
     logits = self.gpt.hidden_state_to_token(last_token)
     return logits
+  
+def train_one_epoch(model:ParaphraseGPT,
+                    train_dataloader,
+                    valid_dataloader,
+                    optimizer:torch.optim.Optimizer,
+                    scheduler:Optional[torch.optim.lr_scheduler.LRScheduler],
+                    device = torch.device("cpu"),
+                    tqdm_title = "Training Batches"):
+    train_loss = 0.0
+    num_obs = 0
+    model.train()
+    for batch in tqdm(train_dataloader, desc=tqdm_title, leave = False):
+      # Get the input and move it to the gpu (I do not recommend training this model on CPU).
+      b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
+      b_ids = b_ids.to(device)
+      b_mask = b_mask.to(device)
+      labels = labels.to(device)
+
+      # Compute the loss, gradients, and update the model's parameters.
+      optimizer.zero_grad()
+      logits = model(b_ids, b_mask)
+      loss = F.cross_entropy(logits, labels, reduction='sum')
+      loss.backward()
+      optimizer.step()
+
+      train_loss += loss.item()
+      num_obs += labels.shape[0]
+      # Adjust Learning Rate with scheduler, if applicable
+      if scheduler is not None:
+        scheduler.step()
+    # Log Training and Validation Metrics
+    out = dict()
+    out["train_loss"] = train_loss / num_obs
+    dev_acc, dev_f1, dev_loss, *_ = model_eval_paraphrase(valid_dataloader, model, device)
+    out["valid_loss"], out["valid_acc"], out["valid_f1"] = dev_loss, dev_acc, dev_f1
+    return out
+
 
 def train(args, peft_args = None):
   """Train GPT-2 for paraphrase detection on the Quora dataset."""
@@ -86,38 +125,21 @@ def train(args, peft_args = None):
     "lr" : args.lr,
     "weight_decay": args.weight_decay
   }
-  trainable_params = [p for p in model.parameters() if p.requires_grad]
-  optimizer = set_optimizer(trainable_params, **optim_config)
-  best_dev_acc = 0
-
+  optimizer = set_optimizer(model.parameters(), **optim_config)
+  best_dev_acc = 0  
+  
+  # Initialize Early Stopping and LR Scheduler
+  es = EarlyStoppingScheduler()
+  num_steps = len(train_dl) * args.epochs
+  warmup_steps = int(0.1 * num_steps)
+  scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, num_steps)
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
-    model.train()
-    train_loss = 0.0
-    num_obs = 0
-    # Early Stopping
-    es = EarlyStoppingScheduler()
-    for batch in tqdm(train_dl, desc=f'train-{epoch}', leave = False):
-      # Get the input and move it to the gpu (I do not recommend training this model on CPU).
-      b_ids, b_mask, labels = batch['token_ids'], batch['attention_mask'], batch['labels'].flatten()
-      b_ids = b_ids.to(device)
-      b_mask = b_mask.to(device)
-      labels = labels.to(device)
-
-      # Compute the loss, gradients, and update the model's parameters.
-      optimizer.zero_grad()
-      logits = model(b_ids, b_mask)
-      loss = F.cross_entropy(logits, labels, reduction='sum')
-      loss.backward()
-      optimizer.step()
-
-      train_loss += loss.item()
-      num_obs += labels.shape[0]
-
-    train_loss = train_loss / num_obs
-
-    dev_acc, dev_f1, dev_loss, *_ = model_eval_paraphrase(valid_dl, model, device)
-
+    metrics = train_one_epoch(model, train_dl, valid_dl,
+                                optimizer, scheduler, device, f"Epoch {epoch}")
+    train_loss = metrics["train_loss"]
+    dev_loss, dev_acc, dev_f1 = metrics["valid_loss"], metrics["valid_acc"], metrics["valid_f1"]
+    print(f"Dev Loss/Acc :: ({dev_loss:.3f}, {dev_acc:.3f})")
     if dev_acc > best_dev_acc:
       best_dev_acc = dev_acc
       save_fine_tune_checkpoint(args.filepath, model.gpt, model_config)
