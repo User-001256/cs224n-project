@@ -31,6 +31,8 @@ from torch_utils import *
 from typing import Optional
 from transformers import get_cosine_schedule_with_warmup
 
+SUBSET = 50000 # Change this to None if you don't want to subset
+
 class ParaphraseGPT(nn.Module):
   """Your GPT-2 Model designed for paraphrase detection."""
 
@@ -63,7 +65,8 @@ def train_one_epoch(model:ParaphraseGPT,
                     optimizer:torch.optim.Optimizer,
                     scheduler:Optional[torch.optim.lr_scheduler.LRScheduler],
                     device = torch.device("cpu"),
-                    tqdm_title = "Training Batches"):
+                    tqdm_title = "Training Batches",
+                    subset_sample: Optional[int] = None):
     train_loss = 0.0
     num_obs = 0
     model.train()
@@ -86,10 +89,17 @@ def train_one_epoch(model:ParaphraseGPT,
       # Adjust Learning Rate with scheduler, if applicable
       if scheduler is not None:
         scheduler.step()
+      # Only train using a random subset
+      if subset_sample is not None and num_obs >= subset_sample:
+        break
+    
+    # Use 1/5 of the training samples for validation
+    test_samples = None if subset_sample is None else subset_sample // 5
+    
     # Log Training and Validation Metrics
     out = dict()
     out["train_loss"] = train_loss / num_obs
-    dev_acc, dev_f1, dev_loss, *_ = model_eval_paraphrase(valid_dataloader, model, device)
+    dev_acc, dev_f1, dev_loss, *_ = model_eval_paraphrase(valid_dataloader, model, device, test_samples)
     out["valid_loss"], out["valid_acc"], out["valid_f1"] = dev_loss, dev_acc, dev_f1
     return out
 
@@ -136,10 +146,10 @@ def train(args, peft_args = None):
   # Run for the specified number of epochs.
   for epoch in range(args.epochs):
     metrics = train_one_epoch(model, train_dl, valid_dl,
-                                optimizer, scheduler, device, f"Epoch {epoch}")
+                                optimizer, scheduler, device, f"Epoch {epoch}",
+                                SUBSET)
     train_loss = metrics["train_loss"]
     dev_loss, dev_acc, dev_f1 = metrics["valid_loss"], metrics["valid_acc"], metrics["valid_f1"]
-    print(f"Dev Loss/Acc :: ({dev_loss:.3f}, {dev_acc:.3f})")
     if dev_acc > best_dev_acc:
       best_dev_acc = dev_acc
       save_fine_tune_checkpoint(args.filepath, model.gpt, model_config)
