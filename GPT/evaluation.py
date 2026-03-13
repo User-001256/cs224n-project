@@ -17,7 +17,7 @@ from datasets import (
 )
 
 @torch.no_grad()
-def model_eval_paraphrase(dataloader, model, device):
+def model_eval_paraphrase(dataloader, model, device, subset_sample = None):
   model.eval()  # Switch to eval model, will turn off randomness like dropout.
   y_true, y_pred, sent_ids = [], [], []
   loss = 0.0
@@ -36,6 +36,8 @@ def model_eval_paraphrase(dataloader, model, device):
     y_true.extend(labels)
     y_pred.extend(preds)
     sent_ids.extend(b_sent_ids)
+    if subset_sample is not None and len(y_pred) >= subset_sample:
+      break
 
   f1 = f1_score(y_true, y_pred, average='macro')
   acc = accuracy_score(y_true, y_pred)

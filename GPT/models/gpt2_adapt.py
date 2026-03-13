@@ -93,13 +93,14 @@ class PrefixSelfAttention(nn.Module):
             torch.cat([self.pre_mask, self.causal_mask], dim=-1),
             persistent=False
         )
-
-        # Prefix positions should not be treated as padded / masked out
+        # We also do not want to treat the prefix tokens as dummy tokens.
         self.register_buffer(
             "pre_attention_mask",
             torch.zeros((1, 1, 1, num_prefixes), dtype=torch.float32),
             persistent=False
         )
+        # Concatenate both masks together.
+        self.all_mask = torch.cat([self.pre_mask, self.causal_mask], dim = -1)
 
         # Initialize the learnable bottleneck vectors:
         self.prefix_vec_k = nn.Parameter(torch.randn((num_prefixes, bottleneck_dim)))
@@ -137,7 +138,7 @@ class PrefixSelfAttention(nn.Module):
         # Apply scaled dot-product. Result shape: (b, h, t, t + p)
         attn_weights = torch.matmul(Q, rearrange(Kp, "b h t d -> b h d t")) / (self.attention_head_size ** 0.5)
         # Only mask the correct things
-        mask = self.all_mask[..., :attn_weights.shape[-2], :attn_weights.shape[-1]].to(attn_weights.device) # Shape (..., t, t+p)
+        mask = self.all_mask[..., :attn_weights.shape[-2], :attn_weights.shape[-1]].to(attn_weights.device).to(attn_weights.device)
         attn_weights = torch.masked_fill(attn_weights, mask == 0, MASK_VALUE)
         # Add attention mask. More manual broadcasting...
         prefix_mask = self.pre_attention_mask.expand(batch, 1, 1, -1).to(attn_weights.device)
@@ -191,7 +192,7 @@ class IA3GPT2Layer(nn.Module):
     learnable vector of dimension 4 * d_model is injected at the intermediate
     activations of the FFN module. Elementwise mult is applied after activation.
     """
-    def __init__(self, base_layer:GPT2Layer, bias = False):
+    def __init__(self, base_layer:GPT2Layer):
         super().__init__()
         # Compose on the original base GPT2Layer
         self.base_layer = base_layer
@@ -200,8 +201,6 @@ class IA3GPT2Layer(nn.Module):
         self.self_attention = IA3SelfAttention(base_layer.self_attention)
         # Learnable vector for FFN activation
         self.task_vec_ff = nn.Parameter(torch.ones(base_layer.ffn_act_dim))
-        # Optional bias for the ffn task vector
-        self.task_vec_bias_ff = nn.Parameter(torch.zeros(base_layer.ffn_act_dim)) if bias else None
     
     # Subroutines of forward: Compatible with bottleneck adapters
     def _attn(self, x, attn_mask):
@@ -214,10 +213,7 @@ class IA3GPT2Layer(nn.Module):
         ffn_in = self.base_layer.ffn_layer_norm(x)
         ffn_act = self.base_layer.ffn_act_fn(self.base_layer.ffn_in_dense(ffn_in))
         # Apply multiplication to activations
-        if self.task_vec_bias_ff is not None:
-            ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act + self.task_vec_bias_ff)
-        else:
-            ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act)
+        ffn_out = self.base_layer.ffn_out_dense(self.task_vec_ff * ffn_act)
         return self.base_layer.ffn_dropout(ffn_out)
 
     def forward(self, x, attention_mask):
