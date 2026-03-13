@@ -14,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent
 #   predictions/
 #     generated_sonnets_dev.txt
 
-PRED_FILE = BASE_DIR / "predictions" / "generated_sonnets_dev.txt"
+PRED_FILE = BASE_DIR / "predictions" / "generated_sonnets_dev_BEST.txt"
 DEV_FILE = BASE_DIR.parent / "data" / "sonnets_held_out_dev.txt"
 TRUE_FILE = BASE_DIR.parent / "data" / "TRUE_sonnets_held_out_dev.txt"
 FINALIZE_MODE = "strip"
