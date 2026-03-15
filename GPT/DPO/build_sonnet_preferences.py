@@ -12,6 +12,16 @@ Workflow:
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+GPT_DIR = SCRIPT_DIR.parent
+REPO_ROOT = GPT_DIR.parent
+for path in (GPT_DIR, REPO_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+       
 import argparse
 import json
 import random
@@ -30,7 +40,9 @@ from torch_utils import load_fine_tune_checkpoint, select_device, set_seed
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parent / "data"
+GPT_DIR = SCRIPT_DIR.parent
+REPO_ROOT = GPT_DIR.parent
+DATA_DIR = REPO_ROOT / "data"
 DEFAULT_REAL_SONNETS = DATA_DIR / "sonnets.txt"
 DEFAULT_SFT_SPLIT = DATA_DIR / "sonnets_sft_train_split.txt"
 DEFAULT_PROMPT_SPLIT = DATA_DIR / "sonnets_dpo_prompt_source.txt"
