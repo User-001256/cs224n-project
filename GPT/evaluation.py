@@ -49,7 +49,7 @@ def model_eval_paraphrase(dataloader, model, device, subset_sample = None):
 def model_test_paraphrase(dataloader, model, device):
   model.eval()  # Switch to eval model, will turn off randomness like dropout.
   y_true, y_pred, sent_ids = [], [], []
-  for step, batch in enumerate(tqdm(dataloader, desc=f'eval', disable=TQDM_DISABLE)):
+  for step, batch in enumerate(tqdm(dataloader, desc=f'eval')):
     b_ids, b_mask, b_sent_ids = batch['token_ids'], batch['attention_mask'], batch['sent_ids']
 
     b_ids = b_ids.to(device)
