@@ -18,8 +18,8 @@ PARAPHRASE_PEFT = {
 
 SONNET_PEFT = {
     "ia3" : dict(),
-    "adapter" : {"adapter_dim" : 64},
-    "lora": {"target_modules": ["query", "value"], "rank": 8, "dropout": 0.05, "alpha": 32},
+    "adapter" : {"adapter_dim" : 16, "gated": True},
+    "lora": {"target_modules": ["query", "value"], "rank": 4, "dropout": 0.05, "alpha": 16, "gated": True},
     "prefix": {
             "num_prefixes": 10,
             "bottleneck_dim": 64,

@@ -232,7 +232,7 @@ def generate_submission_sonnets(args):
     full_sonnet = f'{decoded_output}\n\n'
     generated_sonnets.append((sonnet_id, full_sonnet))
 
-    print(f'{decoded_output}\n\n')
+    # print(f'{decoded_output}\n\n')
 
   with open(args.sonnet_out, "w+", encoding='utf-8') as f:
     f.write(f"--Generated Sonnets-- \n\n")

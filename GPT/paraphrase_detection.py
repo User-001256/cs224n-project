@@ -169,9 +169,10 @@ def test(args):
   # Load our checkpoint. Infer from the saved configs. Returns a GPT2Model
   gpt = load_fine_tune_checkpoint(args.filepath, device, model = None)
   model = ParaphraseGPT(gpt) # type: ignore
+  model = model.to(device)
 
-  dev_dl =  get_paraphrase_dataloader(args.para_valid,"valid", batch_size = args.batch_size, num_workers = args.num_workers)
-  test_dl = get_paraphrase_dataloader(args.para_test,  "test", batch_size = args.batch_size, num_workers = args.num_workers)
+  dev_dl =  get_paraphrase_dataloader(DATA_PATHS.para_valid,"valid", batch_size = args.batch_size, num_workers = args.num_workers)
+  test_dl = get_paraphrase_dataloader(DATA_PATHS.para_test,  "test", batch_size = args.batch_size, num_workers = args.num_workers)
 
   dev_para_acc, _, _, dev_para_y_pred, _, dev_para_sent_ids = model_eval_paraphrase(dev_dl, model, device)
   print(f"dev paraphrase acc :: {dev_para_acc :.3f}")
